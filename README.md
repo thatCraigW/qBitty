@@ -66,6 +66,22 @@ You can use environment variables instead of a config file, or to override indiv
 
 This is useful if you want to keep your URL and username in the config file but pass the password via an env var for extra safety.
 
+### HTTPS and connection security
+
+qBitty will warn if the configured URL uses plain HTTP, since credentials are sent in cleartext. There are a few approaches depending on your setup:
+
+**Localhost only (HTTP is fine)** — If qBittorrent and qBitty run on the same machine, `http://localhost:8080` is safe. Traffic on localhost never leaves your machine, so there is nothing to intercept.
+
+**Self-signed certificate** — To enable HTTPS on the qBittorrent WebUI, generate a self-signed cert and configure it in *Tools > Options > Web UI > Use HTTPS*:
+
+```bash
+openssl req -x509 -newkey rsa:2048 -keyout qbt-key.pem -out qbt-cert.pem -days 3650 -nodes -subj "/CN=localhost"
+```
+
+Then point the WebUI settings to `qbt-cert.pem` and `qbt-key.pem`.
+
+**OrbStack / Docker** — If qBittorrent runs in an OrbStack or Docker container, you can use OrbStack's built-in HTTPS support (e.g. `https://qbittorrent.orb.local`) which provides a trusted local certificate automatically, avoiding self-signed cert hassle.
+
 ## Usage
 
 ```bash
