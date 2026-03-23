@@ -23,6 +23,7 @@ const (
 
 var (
 	viewLeft         = "torrentList"
+	viewDetails      = "details"
 	viewShortcuts    = "shortcuts"
 	viewOverlay      = "overlay"
 	torrents         []Torrent
@@ -31,13 +32,17 @@ var (
 	currentSelection int
 	filterStatus     string
 	filterCategory   string
+	detailsVisible   bool
+	detailsTab       = 5
+	apiClient        *QBClient
 )
 
 func main() {
 	jsonDump := flag.Bool("dump-json", false, "Fetch torrents info and output raw JSON")
 	flag.Parse()
 
-	apiClient, err := NewQBClient()
+	var err error
+	apiClient, err = NewQBClient()
 	if err != nil {
 		log.Fatalf("Failed to login: %v", err)
 	}
@@ -91,6 +96,7 @@ func main() {
 			torrentsMu.Unlock()
 
 			g.Update(func(g *gocui.Gui) error {
+				refreshDetailsPane(g)
 				return refreshUI(g)
 			})
 			case <-done:
@@ -116,7 +122,12 @@ func main() {
 func layout(g *gocui.Gui) error {
 	maxX, maxY := g.Size()
 
-	if v, err := g.SetView(viewLeft, 0, 0, maxX-1, maxY-3, 0); err != nil {
+	listY1 := maxY - 3
+	if detailsVisible {
+		listY1 = maxY * 2 / 5
+	}
+
+	if v, err := g.SetView(viewLeft, 0, 0, maxX-1, listY1, 0); err != nil {
 		if !errors.Is(err, gocui.ErrUnknownView) {
 			return err
 		}
@@ -128,6 +139,18 @@ func layout(g *gocui.Gui) error {
 		refreshTorrentList(g, v)
 		v.SetCursor(0, currentSelection)
 		v.SetOrigin(0, currentSelection)
+	}
+
+	if detailsVisible {
+		if v, err := g.SetView(viewDetails, 0, listY1+1, maxX-1, maxY-3, 0); err != nil {
+			if !errors.Is(err, gocui.ErrUnknownView) {
+				return err
+			}
+			v.Wrap = true
+			refreshDetailsPane(g)
+		}
+	} else {
+		g.DeleteView(viewDetails)
 	}
 
 	if v, err := g.SetView(viewShortcuts, -1, maxY-2, maxX, maxY, 0); err != nil {
@@ -376,7 +399,39 @@ func keybindings(g *gocui.Gui, client *QBClient) error {
 		return err
 	}
 	if err := g.SetKeybinding(viewLeft, gocui.KeySpace, gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
-		return showDetailsDialog(g, client)
+		detailsVisible = !detailsVisible
+		return nil
+	}); err != nil {
+		return err
+	}
+	for i := 1; i <= 5; i++ {
+		tab := i
+		if err := g.SetKeybinding(viewLeft, rune('0'+tab), gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
+			if !detailsVisible {
+				detailsVisible = true
+			}
+			detailsTab = tab
+			refreshDetailsPane(g)
+			return nil
+		}); err != nil {
+			return err
+		}
+	}
+	if err := g.SetKeybinding(viewLeft, gocui.KeyArrowLeft, gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
+		if detailsVisible && detailsTab > 1 {
+			detailsTab--
+			refreshDetailsPane(g)
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	if err := g.SetKeybinding(viewLeft, gocui.KeyArrowRight, gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
+		if detailsVisible && detailsTab < 5 {
+			detailsTab++
+			refreshDetailsPane(g)
+		}
+		return nil
 	}); err != nil {
 		return err
 	}
@@ -404,7 +459,7 @@ func cursorDown(g *gocui.Gui, v *gocui.View) error {
 				return err
 			}
 		}
-		// Refresh UI after cursor change
+		refreshDetailsPane(g)
 		return refreshUI(g)
 	}
 	return nil
@@ -419,7 +474,7 @@ func cursorUp(g *gocui.Gui, v *gocui.View) error {
 				return err
 			}
 		}
-		// Refresh UI after cursor change
+		refreshDetailsPane(g)
 		return refreshUI(g)
 	}
 	return nil
@@ -577,89 +632,23 @@ func showInputDialog(g *gocui.Gui, title string, onSubmit func(string) error) er
 	return err
 }
 
-// showDetailsDialog displays a tabbed modal with detailed torrent info (like qBittorrent WebUI).
-func showDetailsDialog(g *gocui.Gui, client *QBClient) error {
+// refreshDetailsPane re-renders the details pane with the currently selected torrent and active tab.
+func refreshDetailsPane(g *gocui.Gui) {
+	if !detailsVisible {
+		return
+	}
+	v, err := g.View(viewDetails)
+	if err != nil {
+		return
+	}
 	t := getSelectedTorrent()
 	if t == nil {
-		return nil
+		v.Clear()
+		v.SetOrigin(0, 0)
+		fmt.Fprintln(v, " No torrent selected")
+		return
 	}
-	hash := t.Hash
-
-	maxX, maxY := g.Size()
-	width := maxX * 4 / 5
-	if width < 60 {
-		width = 60
-	}
-	if width > maxX-4 {
-		width = maxX - 4
-	}
-	height := maxY * 4 / 5
-	if height < 15 {
-		height = 15
-	}
-	if height > maxY-4 {
-		height = maxY - 4
-	}
-	x0 := maxX/2 - width/2
-	y0 := maxY/2 - height/2
-
-	v, err := g.SetView(viewOverlay, x0, y0, x0+width, y0+height, 0)
-	if err != nil && !errors.Is(err, gocui.ErrUnknownView) {
-		return err
-	}
-	v.Title = "Details"
-	v.Wrap = true
-
-	currentTab := 5
-	renderDetailsTab(v, client, hash, currentTab)
-
-	for i := 1; i <= 5; i++ {
-		tab := i
-		g.SetKeybinding(viewOverlay, rune('0'+tab), gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
-			currentTab = tab
-			renderDetailsTab(v, client, hash, currentTab)
-			return nil
-		})
-	}
-	g.SetKeybinding(viewOverlay, gocui.KeyArrowLeft, gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
-		if currentTab > 1 {
-			currentTab--
-			renderDetailsTab(v, client, hash, currentTab)
-		}
-		return nil
-	})
-	g.SetKeybinding(viewOverlay, gocui.KeyArrowRight, gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
-		if currentTab < 5 {
-			currentTab++
-			renderDetailsTab(v, client, hash, currentTab)
-		}
-		return nil
-	})
-
-	g.SetKeybinding(viewOverlay, gocui.KeyArrowDown, gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
-		ox, oy := v.Origin()
-		v.SetOrigin(ox, oy+1)
-		return nil
-	})
-	g.SetKeybinding(viewOverlay, gocui.KeyArrowUp, gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
-		ox, oy := v.Origin()
-		if oy > 0 {
-			v.SetOrigin(ox, oy-1)
-		}
-		return nil
-	})
-	g.SetKeybinding(viewOverlay, gocui.KeyEsc, gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
-		return closeOverlay(g)
-	})
-	g.SetKeybinding(viewOverlay, gocui.KeySpace, gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
-		return closeOverlay(g)
-	})
-	g.SetKeybinding(viewOverlay, 'q', gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
-		return closeOverlay(g)
-	})
-
-	_, err = g.SetCurrentView(viewOverlay)
-	return err
+	renderDetailsTab(v, apiClient, t.Hash, detailsTab)
 }
 
 // renderDetailsTab clears the overlay and draws the tab header + content for the given tab number.
