@@ -176,3 +176,57 @@ func (c *QBClient) DecreasePriority(hash string) error {
 func (c *QBClient) AddTorrentURL(torrentURL string) error {
 	return c.postAction("/api/v2/torrents/add", url.Values{"urls": {torrentURL}})
 }
+
+// getJSON performs a GET request and decodes the JSON response into target.
+func (c *QBClient) getJSON(endpoint string, target interface{}) error {
+	resp, err := c.Client.Get(c.BaseURL + endpoint)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("API returned status %d", resp.StatusCode)
+	}
+	return json.NewDecoder(resp.Body).Decode(target)
+}
+
+// GetTorrentProperties fetches detailed properties for a single torrent by hash.
+func (c *QBClient) GetTorrentProperties(hash string) (*TorrentProperties, error) {
+	var props TorrentProperties
+	err := c.getJSON("/api/v2/torrents/properties?hash="+hash, &props)
+	return &props, err
+}
+
+// GetTorrentTrackers fetches the tracker list for a torrent by hash.
+func (c *QBClient) GetTorrentTrackers(hash string) ([]Tracker, error) {
+	var trackers []Tracker
+	err := c.getJSON("/api/v2/torrents/trackers?hash="+hash, &trackers)
+	return trackers, err
+}
+
+// GetTorrentPeers fetches connected peers for a torrent by hash.
+func (c *QBClient) GetTorrentPeers(hash string) ([]Peer, error) {
+	var result PeersResponse
+	if err := c.getJSON("/api/v2/sync/torrentPeers?hash="+hash, &result); err != nil {
+		return nil, err
+	}
+	peers := make([]Peer, 0, len(result.Peers))
+	for _, p := range result.Peers {
+		peers = append(peers, p)
+	}
+	return peers, nil
+}
+
+// GetTorrentWebSeeds fetches HTTP sources (web seeds) for a torrent by hash.
+func (c *QBClient) GetTorrentWebSeeds(hash string) ([]WebSeed, error) {
+	var seeds []WebSeed
+	err := c.getJSON("/api/v2/torrents/webseeds?hash="+hash, &seeds)
+	return seeds, err
+}
+
+// GetTorrentFiles fetches the file list for a torrent by hash.
+func (c *QBClient) GetTorrentFiles(hash string) ([]TorrentFile, error) {
+	var files []TorrentFile
+	err := c.getJSON("/api/v2/torrents/files?hash="+hash, &files)
+	return files, err
+}
