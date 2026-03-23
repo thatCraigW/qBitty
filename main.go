@@ -56,7 +56,7 @@ func main() {
 	torrents = initialTorrents
 	torrentsMu.Unlock()
 
-	g, err := gocui.NewGui(gocui.OutputNormal, true)
+	g, err := gocui.NewGui(gocui.Output256, true)
 	if err != nil {
 		log.Panicln(err)
 	}
@@ -163,8 +163,8 @@ func refreshTorrentList(g *gocui.Gui, v *gocui.View) {
 
 	v.Clear()
 
-	// Print header
-	fmt.Fprintf(v, "%-*s %-*s %-*s %-*s %-*s %-*s %-*s %-*s\n",
+	fmt.Fprintf(v, "%s%-*s %-*s %-*s %-*s %-*s %-*s %-*s %-*s%s\n",
+		"\033[38;5;245m",
 		nameWidth, "Name",
 		progressWidth, "Progress%",
 		statusWidth, "Status",
@@ -172,7 +172,8 @@ func refreshTorrentList(g *gocui.Gui, v *gocui.View) {
 		ulSpeedWidth, "UpSpeed",
 		etaWidth, "ETA",
 		sizeWidth, "Size",
-		seedsPeersWidth, "Seeds/Peers")
+		seedsPeersWidth, "Seeds/Peers",
+		resetColor)
 
 	torrentsMu.RLock()
 	localTorrents := torrents
