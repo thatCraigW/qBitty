@@ -22,12 +22,15 @@ const (
 )
 
 var (
-	viewLeft      = "torrentList"
-	viewShortcuts = "shortcuts"
-	viewOverlay   = "overlay"
-	torrents      []Torrent
-	torrentsMu    sync.RWMutex
+	viewLeft         = "torrentList"
+	viewShortcuts    = "shortcuts"
+	viewOverlay      = "overlay"
+	torrents         []Torrent
+	filteredTorrents []Torrent
+	torrentsMu       sync.RWMutex
 	currentSelection int
+	filterStatus     string
+	filterCategory   string
 )
 
 func main() {
@@ -54,6 +57,7 @@ func main() {
 	}
 	torrentsMu.Lock()
 	torrents = initialTorrents
+	applyFilters()
 	torrentsMu.Unlock()
 
 	g, err := gocui.NewGui(gocui.Output256, true)
@@ -83,9 +87,7 @@ func main() {
 
 			torrentsMu.Lock()
 			torrents = newTorrents
-			if currentSelection >= len(torrents) && len(torrents) > 0 {
-				currentSelection = len(torrents) - 1
-			}
+			applyFilters()
 			torrentsMu.Unlock()
 
 			g.Update(func(g *gocui.Gui) error {
@@ -163,6 +165,25 @@ func refreshTorrentList(g *gocui.Gui, v *gocui.View) {
 
 	v.Clear()
 
+	torrentsMu.RLock()
+	localTorrents := filteredTorrents
+	fStatus := filterStatus
+	fCategory := filterCategory
+	torrentsMu.RUnlock()
+
+	title := "Torrents"
+	if fStatus != "" || fCategory != "" {
+		parts := []string{}
+		if fStatus != "" {
+			parts = append(parts, fStatus)
+		}
+		if fCategory != "" {
+			parts = append(parts, fCategory)
+		}
+		title += " [" + strings.Join(parts, ", ") + "]"
+	}
+	v.Title = title
+
 	fmt.Fprintf(v, "%s%-*s %-*s %-*s %-*s %-*s %-*s %-*s %-*s%s\n",
 		"\033[38;5;245m",
 		nameWidth, "Name",
@@ -174,10 +195,6 @@ func refreshTorrentList(g *gocui.Gui, v *gocui.View) {
 		sizeWidth, "Size",
 		seedsPeersWidth, "Seeds/Peers",
 		resetColor)
-
-	torrentsMu.RLock()
-	localTorrents := torrents
-	torrentsMu.RUnlock()
 
 	for _, t := range localTorrents {
 		colorState := colorForState(t.State)
@@ -363,6 +380,11 @@ func keybindings(g *gocui.Gui, client *QBClient) error {
 	}); err != nil {
 		return err
 	}
+	if err := g.SetKeybinding(viewLeft, 'f', gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
+		return showFilterDialog(g)
+	}); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -372,7 +394,7 @@ func quit(g *gocui.Gui, v *gocui.View) error {
 
 func cursorDown(g *gocui.Gui, v *gocui.View) error {
 	torrentsMu.RLock()
-	count := len(torrents)
+	count := len(filteredTorrents)
 	torrentsMu.RUnlock()
 	if currentSelection < count-1 {
 		currentSelection++
@@ -417,8 +439,8 @@ func refreshUI(g *gocui.Gui) error {
 func getSelectedTorrent() *Torrent {
 	torrentsMu.RLock()
 	defer torrentsMu.RUnlock()
-	if currentSelection >= 0 && currentSelection < len(torrents) {
-		t := torrents[currentSelection]
+	if currentSelection >= 0 && currentSelection < len(filteredTorrents) {
+		t := filteredTorrents[currentSelection]
 		return &t
 	}
 	return nil
@@ -588,15 +610,31 @@ func showDetailsDialog(g *gocui.Gui, client *QBClient) error {
 	v.Title = "Details"
 	v.Wrap = true
 
-	renderDetailsTab(v, client, hash, 5)
+	currentTab := 5
+	renderDetailsTab(v, client, hash, currentTab)
 
 	for i := 1; i <= 5; i++ {
 		tab := i
 		g.SetKeybinding(viewOverlay, rune('0'+tab), gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
-			renderDetailsTab(v, client, hash, tab)
+			currentTab = tab
+			renderDetailsTab(v, client, hash, currentTab)
 			return nil
 		})
 	}
+	g.SetKeybinding(viewOverlay, gocui.KeyArrowLeft, gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
+		if currentTab > 1 {
+			currentTab--
+			renderDetailsTab(v, client, hash, currentTab)
+		}
+		return nil
+	})
+	g.SetKeybinding(viewOverlay, gocui.KeyArrowRight, gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
+		if currentTab < 5 {
+			currentTab++
+			renderDetailsTab(v, client, hash, currentTab)
+		}
+		return nil
+	})
 
 	g.SetKeybinding(viewOverlay, gocui.KeyArrowDown, gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
 		ox, oy := v.Origin()
@@ -865,6 +903,186 @@ func filePriorityStr(priority int) string {
 	}
 }
 
+// applyFilters rebuilds filteredTorrents from torrents using active filters. Must be called with torrentsMu held.
+func applyFilters() {
+	filtered := make([]Torrent, 0, len(torrents))
+	for _, t := range torrents {
+		if filterStatus != "" && cleanStatusString(t.State) != filterStatus {
+			continue
+		}
+		if filterCategory != "" && t.Category != filterCategory {
+			continue
+		}
+		filtered = append(filtered, t)
+	}
+	filteredTorrents = filtered
+	if currentSelection >= len(filteredTorrents) {
+		if len(filteredTorrents) > 0 {
+			currentSelection = len(filteredTorrents) - 1
+		} else {
+			currentSelection = 0
+		}
+	}
+}
+
+// getUniqueStatuses returns ["All"] plus every distinct cleaned status in the unfiltered torrent list.
+func getUniqueStatuses() []string {
+	torrentsMu.RLock()
+	defer torrentsMu.RUnlock()
+	seen := map[string]bool{}
+	statuses := []string{"All"}
+	for _, t := range torrents {
+		s := cleanStatusString(t.State)
+		if !seen[s] {
+			seen[s] = true
+			statuses = append(statuses, s)
+		}
+	}
+	return statuses
+}
+
+// getUniqueCategories returns ["All"] plus every distinct category in the unfiltered torrent list.
+func getUniqueCategories() []string {
+	torrentsMu.RLock()
+	defer torrentsMu.RUnlock()
+	seen := map[string]bool{}
+	cats := []string{"All"}
+	for _, t := range torrents {
+		if t.Category != "" && !seen[t.Category] {
+			seen[t.Category] = true
+			cats = append(cats, t.Category)
+		}
+	}
+	return cats
+}
+
+// showFilterDialog displays a dialog to filter by status and/or category using ←/→ to cycle options.
+func showFilterDialog(g *gocui.Gui) error {
+	statusOpts := getUniqueStatuses()
+	catOpts := getUniqueCategories()
+
+	row := 0
+	statusIdx := 0
+	catIdx := 0
+
+	torrentsMu.RLock()
+	for i, s := range statusOpts {
+		if (filterStatus == "" && s == "All") || s == filterStatus {
+			statusIdx = i
+			break
+		}
+	}
+	for i, c := range catOpts {
+		if (filterCategory == "" && c == "All") || c == filterCategory {
+			catIdx = i
+			break
+		}
+	}
+	torrentsMu.RUnlock()
+
+	maxX, maxY := g.Size()
+	width := 52
+	if width > maxX-4 {
+		width = maxX - 4
+	}
+	x0 := maxX/2 - width/2
+	y0 := maxY/2 - 3
+
+	v, err := g.SetView(viewOverlay, x0, y0, x0+width, y0+6, 0)
+	if err != nil && !errors.Is(err, gocui.ErrUnknownView) {
+		return err
+	}
+	v.Title = "Filter"
+
+	grey := "\033[38;5;245m"
+	redraw := func() {
+		v.Clear()
+		ind0, ind1 := " ", " "
+		if row == 0 {
+			ind0 = yellowColor + "▸" + resetColor
+		}
+		if row == 1 {
+			ind1 = yellowColor + "▸" + resetColor
+		}
+		fmt.Fprintf(v, " %s %sStatus:%s   ◀ %s%s%s ▶\n", ind0, grey, resetColor, yellowColor, statusOpts[statusIdx], resetColor)
+		fmt.Fprintf(v, " %s %sCategory:%s ◀ %s%s%s ▶\n", ind1, grey, resetColor, yellowColor, catOpts[catIdx], resetColor)
+		fmt.Fprintln(v)
+		fmt.Fprintf(v, " %s←/→ cycle  ↑/↓ switch  Enter apply  r reset%s", grey, resetColor)
+	}
+	redraw()
+
+	g.SetKeybinding(viewOverlay, gocui.KeyArrowUp, gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
+		if row > 0 {
+			row--
+		}
+		redraw()
+		return nil
+	})
+	g.SetKeybinding(viewOverlay, gocui.KeyArrowDown, gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
+		if row < 1 {
+			row++
+		}
+		redraw()
+		return nil
+	})
+	g.SetKeybinding(viewOverlay, gocui.KeyArrowLeft, gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
+		if row == 0 {
+			statusIdx--
+			if statusIdx < 0 {
+				statusIdx = len(statusOpts) - 1
+			}
+		} else {
+			catIdx--
+			if catIdx < 0 {
+				catIdx = len(catOpts) - 1
+			}
+		}
+		redraw()
+		return nil
+	})
+	g.SetKeybinding(viewOverlay, gocui.KeyArrowRight, gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
+		if row == 0 {
+			statusIdx = (statusIdx + 1) % len(statusOpts)
+		} else {
+			catIdx = (catIdx + 1) % len(catOpts)
+		}
+		redraw()
+		return nil
+	})
+	g.SetKeybinding(viewOverlay, gocui.KeyEnter, gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
+		torrentsMu.Lock()
+		if statusIdx == 0 {
+			filterStatus = ""
+		} else {
+			filterStatus = statusOpts[statusIdx]
+		}
+		if catIdx == 0 {
+			filterCategory = ""
+		} else {
+			filterCategory = catOpts[catIdx]
+		}
+		applyFilters()
+		torrentsMu.Unlock()
+		closeOverlay(g)
+		return refreshUI(g)
+	})
+	g.SetKeybinding(viewOverlay, 'r', gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
+		torrentsMu.Lock()
+		filterStatus = ""
+		filterCategory = ""
+		applyFilters()
+		torrentsMu.Unlock()
+		closeOverlay(g)
+		return refreshUI(g)
+	})
+	g.SetKeybinding(viewOverlay, gocui.KeyEsc, gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
+		return closeOverlay(g)
+	})
+
+	_, err = g.SetCurrentView(viewOverlay)
+	return err
+}
+
 // closeOverlay removes the overlay view and restores focus to the torrent list.
 func closeOverlay(g *gocui.Gui) error {
 	g.DeleteKeybindings(viewOverlay)
@@ -877,7 +1095,8 @@ func closeOverlay(g *gocui.Gui) error {
 
 // drawShortcutsBar writes the keyboard shortcut hints into the given view.
 func drawShortcutsBar(v *gocui.View) {
-	fmt.Fprintf(v, " %s⎵%s details  %ss%s stop/start  %sd%s delete  %s+%s pri up  %s-%s pri down  %sa%s add url  %sm%s magnet  %sq%s quit",
+	fmt.Fprintf(v, " %s⎵%s details  %ss%s stop/start  %sd%s delete  %s+%s pri up  %s-%s pri down  %sf%s filter  %sa%s add url  %sm%s magnet  %sq%s quit",
+		yellowColor, resetColor,
 		yellowColor, resetColor,
 		yellowColor, resetColor,
 		yellowColor, resetColor,
