@@ -2,14 +2,12 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 )
@@ -21,23 +19,19 @@ type QBClient struct {
 	BaseURL string
 }
 
-// NewQBClient creates a new client and logs in using
-// credentials from environment variables (QB_URL, QB_USER, QB_PASS).
+// NewQBClient loads config (file + env var fallback), creates an HTTP client, and authenticates.
 func NewQBClient() (*QBClient, error) {
-	baseURL := os.Getenv("QB_URL")
-	username := os.Getenv("QB_USER")
-	password := os.Getenv("QB_PASS")
-
-	if baseURL == "" || username == "" || password == "" {
-		return nil, errors.New("QB_URL, QB_USER and QB_PASS environment variables must be set")
+	cfg, err := LoadConfig()
+	if err != nil {
+		return nil, err
 	}
 
-	parsed, err := url.Parse(baseURL)
+	parsed, err := url.Parse(cfg.URL)
 	if err != nil {
-		return nil, fmt.Errorf("invalid QB_URL: %w", err)
+		return nil, fmt.Errorf("invalid URL: %w", err)
 	}
 	if parsed.Scheme == "http" {
-		log.Println("WARNING: QB_URL uses plain HTTP — credentials will be sent in cleartext. Use HTTPS for secure connections.")
+		log.Println("WARNING: URL uses plain HTTP — credentials will be sent in cleartext. Use HTTPS for secure connections.")
 	}
 
 	jar, err := cookiejar.New(nil)
@@ -51,10 +45,10 @@ func NewQBClient() (*QBClient, error) {
 
 	api := &QBClient{
 		Client:  client,
-		BaseURL: strings.TrimRight(baseURL, "/"),
+		BaseURL: strings.TrimRight(cfg.URL, "/"),
 	}
 
-	if err := api.Login(username, password); err != nil {
+	if err := api.Login(cfg.Username, cfg.Password); err != nil {
 		return nil, err
 	}
 	return api, nil
