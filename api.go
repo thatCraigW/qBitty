@@ -125,3 +125,54 @@ func (c *QBClient) GetTorrentsRaw() ([]byte, error) {
 
 	return data, nil
 }
+
+// postAction sends a POST with form data to the given API endpoint; returns error on non-200.
+func (c *QBClient) postAction(endpoint string, data url.Values) error {
+	resp, err := c.Client.PostForm(c.BaseURL+endpoint, data)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("API %s returned status %d: %s", endpoint, resp.StatusCode, string(body))
+	}
+	return nil
+}
+
+// StopTorrents sends a stop command for the given torrent hashes (pipe-separated).
+func (c *QBClient) StopTorrents(hashes string) error {
+	return c.postAction("/api/v2/torrents/stop", url.Values{"hashes": {hashes}})
+}
+
+// StartTorrents sends a start command for the given torrent hashes (pipe-separated).
+func (c *QBClient) StartTorrents(hashes string) error {
+	return c.postAction("/api/v2/torrents/start", url.Values{"hashes": {hashes}})
+}
+
+// DeleteTorrent removes a torrent; deleteFiles controls whether downloaded data is also removed.
+func (c *QBClient) DeleteTorrent(hash string, deleteFiles bool) error {
+	df := "false"
+	if deleteFiles {
+		df = "true"
+	}
+	return c.postAction("/api/v2/torrents/delete", url.Values{
+		"hashes":      {hash},
+		"deleteFiles": {df},
+	})
+}
+
+// IncreasePriority raises queue priority for the given torrent hash.
+func (c *QBClient) IncreasePriority(hash string) error {
+	return c.postAction("/api/v2/torrents/increasePrio", url.Values{"hashes": {hash}})
+}
+
+// DecreasePriority lowers queue priority for the given torrent hash.
+func (c *QBClient) DecreasePriority(hash string) error {
+	return c.postAction("/api/v2/torrents/decreasePrio", url.Values{"hashes": {hash}})
+}
+
+// AddTorrentURL adds a torrent by URL or magnet link.
+func (c *QBClient) AddTorrentURL(torrentURL string) error {
+	return c.postAction("/api/v2/torrents/add", url.Values{"urls": {torrentURL}})
+}

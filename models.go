@@ -1,6 +1,7 @@
 package main
 
 type Torrent struct {
+	Hash          string  `json:"hash"`
 	Name          string  `json:"name"`
 	Progress      float64 `json:"progress"` // fraction from 0 to 1
 	State         string  `json:"state"`

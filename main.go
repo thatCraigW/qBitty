@@ -22,11 +22,12 @@ const (
 )
 
 var (
-	viewLeft         = "torrentList"
-	viewRight        = "torrentDetails"
-	torrents         []Torrent
-	torrentsMu       sync.RWMutex
-	currentSelection = 0
+	viewLeft      = "torrentList"
+	viewShortcuts = "shortcuts"
+	viewOverlay   = "overlay"
+	torrents      []Torrent
+	torrentsMu    sync.RWMutex
+	currentSelection int
 )
 
 func main() {
@@ -82,6 +83,9 @@ func main() {
 
 			torrentsMu.Lock()
 			torrents = newTorrents
+			if currentSelection >= len(torrents) && len(torrents) > 0 {
+				currentSelection = len(torrents) - 1
+			}
 			torrentsMu.Unlock()
 
 			g.Update(func(g *gocui.Gui) error {
@@ -95,7 +99,7 @@ func main() {
 
 	g.SetManagerFunc(layout)
 
-	if err := keybindings(g); err != nil {
+	if err := keybindings(g, apiClient); err != nil {
 		log.Panicln(err)
 	}
 
@@ -110,29 +114,10 @@ func main() {
 func layout(g *gocui.Gui) error {
 	maxX, maxY := g.Size()
 
-	// Define fixed widths
-	statusWidth := 12
-	progressWidth := 9
-	dlSpeedWidth := 12
-	ulSpeedWidth := 12
-	etaWidth := 6
-	sizeWidth := 10
-	seedsPeersWidth := 10
-	padding := 8 // spaces between columns
-
-	// Calculate dynamic nameWidth
-	usedWidth := statusWidth + progressWidth + dlSpeedWidth + ulSpeedWidth + etaWidth + sizeWidth + seedsPeersWidth + padding
-	nameWidth := maxX - usedWidth
-	if nameWidth < 20 {
-		nameWidth = 20 // min width
-	}
-
-	// Top view for torrent list
-	if v, err := g.SetView(viewLeft, 0, 1, maxX-1, (maxY*2)/3-1, 0); err != nil {
+	if v, err := g.SetView(viewLeft, 0, 0, maxX-1, maxY-3, 0); err != nil {
 		if !errors.Is(err, gocui.ErrUnknownView) {
 			return err
 		}
-
 		v.Title = "Torrents"
 		v.Highlight = true
 		v.Editable = false
@@ -143,19 +128,17 @@ func layout(g *gocui.Gui) error {
 		v.SetOrigin(0, currentSelection)
 	}
 
-	// Bottom view for details (initially empty)
-	if v, err := g.SetView(viewRight, 0, (maxY*2)/3, maxX-1, maxY-1, 0); err != nil {
+	if v, err := g.SetView(viewShortcuts, -1, maxY-2, maxX, maxY, 0); err != nil {
 		if !errors.Is(err, gocui.ErrUnknownView) {
 			return err
 		}
-
-		v.Title = "Details"
-		v.Wrap = true
-		v.Clear()
-		fmt.Fprintln(v, "Select a torrent to see details")
+		v.Frame = false
+		drawShortcutsBar(v)
 	}
 
-	g.SetCurrentView(viewLeft)
+	if _, err := g.View(viewOverlay); err != nil {
+		g.SetCurrentView(viewLeft)
+	}
 
 	return nil
 }
@@ -330,8 +313,7 @@ func formatETA(seconds int64) string {
 	}
 }
 
-func keybindings(g *gocui.Gui) error {
-	// Bind arrow keys explicitly to torrent list view
+func keybindings(g *gocui.Gui, client *QBClient) error {
 	if err := g.SetKeybinding(viewLeft, gocui.KeyArrowDown, gocui.ModNone, cursorDown); err != nil {
 		return err
 	}
@@ -339,6 +321,40 @@ func keybindings(g *gocui.Gui) error {
 		return err
 	}
 	if err := g.SetKeybinding(viewLeft, 'q', gocui.ModNone, quit); err != nil {
+		return err
+	}
+	if err := g.SetKeybinding(viewLeft, 's', gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
+		return toggleTorrent(g, client)
+	}); err != nil {
+		return err
+	}
+	if err := g.SetKeybinding(viewLeft, 'd', gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
+		return confirmDeleteTorrent(g, client)
+	}); err != nil {
+		return err
+	}
+	if err := g.SetKeybinding(viewLeft, '+', gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
+		return changePriority(g, client, true)
+	}); err != nil {
+		return err
+	}
+	if err := g.SetKeybinding(viewLeft, '-', gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
+		return changePriority(g, client, false)
+	}); err != nil {
+		return err
+	}
+	if err := g.SetKeybinding(viewLeft, 'a', gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
+		return showInputDialog(g, "Add Torrent URL", func(input string) error {
+			return client.AddTorrentURL(input)
+		})
+	}); err != nil {
+		return err
+	}
+	if err := g.SetKeybinding(viewLeft, 'm', gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
+		return showInputDialog(g, "Add Magnet Link", func(input string) error {
+			return client.AddTorrentURL(input)
+		})
+	}); err != nil {
 		return err
 	}
 	return nil
@@ -391,4 +407,167 @@ func refreshUI(g *gocui.Gui) error {
 	return v.SetCursor(0, currentSelection+1)
 }
 
-// Additional helper functions here (truncateName, formatSpeed, etc.)
+// getSelectedTorrent returns a copy of the currently selected torrent, or nil if none.
+func getSelectedTorrent() *Torrent {
+	torrentsMu.RLock()
+	defer torrentsMu.RUnlock()
+	if currentSelection >= 0 && currentSelection < len(torrents) {
+		t := torrents[currentSelection]
+		return &t
+	}
+	return nil
+}
+
+// isStoppedOrPaused returns true if the torrent state indicates it is not active.
+func isStoppedOrPaused(state string) bool {
+	switch state {
+	case "stoppedDL", "stoppedUP", "stopped", "pausedDL", "pausedUP":
+		return true
+	}
+	return false
+}
+
+// toggleTorrent stops a running torrent or starts a stopped one.
+func toggleTorrent(g *gocui.Gui, client *QBClient) error {
+	t := getSelectedTorrent()
+	if t == nil {
+		return nil
+	}
+	if isStoppedOrPaused(t.State) {
+		if err := client.StartTorrents(t.Hash); err != nil {
+			log.Printf("start error: %v", err)
+		}
+	} else {
+		if err := client.StopTorrents(t.Hash); err != nil {
+			log.Printf("stop error: %v", err)
+		}
+	}
+	return nil
+}
+
+// changePriority increases or decreases the selected torrent's queue priority.
+func changePriority(g *gocui.Gui, client *QBClient, increase bool) error {
+	t := getSelectedTorrent()
+	if t == nil {
+		return nil
+	}
+	var err error
+	if increase {
+		err = client.IncreasePriority(t.Hash)
+	} else {
+		err = client.DecreasePriority(t.Hash)
+	}
+	if err != nil {
+		log.Printf("priority error: %v", err)
+	}
+	return nil
+}
+
+// confirmDeleteTorrent shows a y/n confirmation overlay before deleting.
+func confirmDeleteTorrent(g *gocui.Gui, client *QBClient) error {
+	t := getSelectedTorrent()
+	if t == nil {
+		return nil
+	}
+	name := truncateName(t.Name, 40)
+	hash := t.Hash
+	return showConfirmDialog(g, fmt.Sprintf("Delete '%s'? (y/n)", name), func() error {
+		return client.DeleteTorrent(hash, false)
+	})
+}
+
+// showConfirmDialog displays a y/n confirmation overlay; calls onConfirm if user presses y.
+func showConfirmDialog(g *gocui.Gui, message string, onConfirm func() error) error {
+	maxX, maxY := g.Size()
+	width := len(message) + 4
+	if width < 30 {
+		width = 30
+	}
+	if width > maxX-4 {
+		width = maxX - 4
+	}
+	x0 := maxX/2 - width/2
+	y0 := maxY/2 - 1
+
+	v, err := g.SetView(viewOverlay, x0, y0, x0+width, y0+2, 0)
+	if err != nil && !errors.Is(err, gocui.ErrUnknownView) {
+		return err
+	}
+	v.Title = "Confirm"
+	v.Clear()
+	fmt.Fprintf(v, " %s", message)
+
+	g.SetKeybinding(viewOverlay, 'y', gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
+		if err := onConfirm(); err != nil {
+			log.Printf("action error: %v", err)
+		}
+		return closeOverlay(g)
+	})
+	g.SetKeybinding(viewOverlay, 'n', gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
+		return closeOverlay(g)
+	})
+	g.SetKeybinding(viewOverlay, gocui.KeyEsc, gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
+		return closeOverlay(g)
+	})
+
+	_, err = g.SetCurrentView(viewOverlay)
+	return err
+}
+
+// showInputDialog displays a text input overlay; calls onSubmit with the entered text on Enter.
+func showInputDialog(g *gocui.Gui, title string, onSubmit func(string) error) error {
+	maxX, maxY := g.Size()
+	width := 70
+	if width > maxX-4 {
+		width = maxX - 4
+	}
+	x0 := maxX/2 - width/2
+	y0 := maxY/2 - 1
+
+	v, err := g.SetView(viewOverlay, x0, y0, x0+width, y0+2, 0)
+	if err != nil && !errors.Is(err, gocui.ErrUnknownView) {
+		return err
+	}
+	v.Title = title
+	v.Editable = true
+	v.Clear()
+
+	g.SetKeybinding(viewOverlay, gocui.KeyEnter, gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
+		input := strings.TrimSpace(v.Buffer())
+		if input != "" {
+			if err := onSubmit(input); err != nil {
+				log.Printf("submit error: %v", err)
+			}
+		}
+		return closeOverlay(g)
+	})
+	g.SetKeybinding(viewOverlay, gocui.KeyEsc, gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
+		return closeOverlay(g)
+	})
+
+	_, err = g.SetCurrentView(viewOverlay)
+	return err
+}
+
+// closeOverlay removes the overlay view and restores focus to the torrent list.
+func closeOverlay(g *gocui.Gui) error {
+	g.DeleteKeybindings(viewOverlay)
+	if err := g.DeleteView(viewOverlay); err != nil {
+		return err
+	}
+	_, err := g.SetCurrentView(viewLeft)
+	return err
+}
+
+// drawShortcutsBar writes the keyboard shortcut hints into the given view.
+func drawShortcutsBar(v *gocui.View) {
+	fmt.Fprintf(v, " %ss%s stop/start  %sd%s delete  %s+%s pri up  %s-%s pri down  %sa%s add url  %sm%s magnet  %sq%s quit",
+		yellowColor, resetColor,
+		yellowColor, resetColor,
+		yellowColor, resetColor,
+		yellowColor, resetColor,
+		yellowColor, resetColor,
+		yellowColor, resetColor,
+		yellowColor, resetColor,
+	)
+}
