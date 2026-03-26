@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/awesome-gocui/gocui"
@@ -19,6 +20,9 @@ const (
 	greenColor  = "\033[32m"
 	yellowColor = "\033[33m"
 	blueColor   = "\033[34m"
+
+	viewAPIError        = "apiError"
+	apiRetryIntervalSec = 10
 )
 
 var (
@@ -37,17 +41,123 @@ var (
 	apiClient        *QBClient
 )
 
+// apiErrorState holds plain-English overlay text and retry countdown for connection issues.
+type apiErrorState struct {
+	Title     string
+	Lines     []string
+	Footnote  string
+	AutoRetry bool
+	Countdown int
+}
+
+var (
+	apiErrMu           sync.Mutex
+	apiErr             *apiErrorState
+	apiRecoveryRunning int32
+)
+
+// retryFootnote returns countdown text or a connecting message for the API error banner.
+func retryFootnote(st *apiErrorState) string {
+	if st.Countdown > 0 {
+		return fmt.Sprintf("Retrying in %ds…", st.Countdown)
+	}
+	return "Reconnecting…"
+}
+
+// setAPIError records a user-facing API failure, clears the torrent list, and shows the centered modal copy.
+func setAPIError(err error) {
+	if err == nil {
+		return
+	}
+	class := classifyQBAPIError(err)
+	title, lines, auto := apiErrorModalContent(class, err)
+	var foot string
+	cd := 0
+	if auto {
+		cd = apiRetryIntervalSec
+		foot = fmt.Sprintf("Retrying in %ds…", cd)
+	} else {
+		foot = "Press r to retry after fixing username/password."
+	}
+	apiErrMu.Lock()
+	apiErr = &apiErrorState{
+		Title:     title,
+		Lines:     lines,
+		Footnote:  foot,
+		AutoRetry: auto,
+		Countdown: cd,
+	}
+	apiErrMu.Unlock()
+
+	torrentsMu.Lock()
+	torrents = nil
+	applyFilters()
+	torrentsMu.Unlock()
+}
+
+// clearAPIError removes the API error overlay state.
+func clearAPIError() {
+	apiErrMu.Lock()
+	apiErr = nil
+	apiErrMu.Unlock()
+}
+
+// tryRecoverAPISync reloads config, logs in, and fetches torrents — updates or clears apiErr on failure/success.
+func tryRecoverAPISync() {
+	cfg, err := LoadConfig()
+	if err != nil {
+		setAPIError(err)
+		return
+	}
+	if err := apiClient.Login(cfg.Username, cfg.Password); err != nil {
+		setAPIError(err)
+		return
+	}
+	newT, err := apiClient.GetTorrents()
+	if err != nil {
+		setAPIError(err)
+		return
+	}
+	clearAPIError()
+	torrentsMu.Lock()
+	torrents = newT
+	applyFilters()
+	torrentsMu.Unlock()
+}
+
+// triggerAPIRetry runs a manual reconnect in the background and refreshes the UI when done.
+func triggerAPIRetry(g *gocui.Gui) {
+	if !atomic.CompareAndSwapInt32(&apiRecoveryRunning, 0, 1) {
+		return
+	}
+	go func() {
+		defer atomic.StoreInt32(&apiRecoveryRunning, 0)
+		tryRecoverAPISync()
+		g.Update(func(gui *gocui.Gui) error {
+			refreshDetailsPane(gui)
+			return refreshUI(gui)
+		})
+	}()
+}
+
 func main() {
 	jsonDump := flag.Bool("dump-json", false, "Fetch torrents info and output raw JSON")
 	flag.Parse()
 
-	var err error
-	apiClient, err = NewQBClient()
+	cfg, err := LoadConfig()
 	if err != nil {
-		log.Fatalf("Failed to login: %v", err)
+		log.Fatal(err)
+	}
+
+	apiClient, err = NewQBClientFromConfig(cfg)
+	if err != nil {
+		log.Fatalf("Failed to create API client: %v", err)
 	}
 
 	if *jsonDump {
+		if err := apiClient.Login(cfg.Username, cfg.Password); err != nil {
+			log.Fatalf("Failed to login: %v", err)
+		}
 		jsonData, err := apiClient.GetTorrentsRaw()
 		if err != nil {
 			log.Fatalf("Failed to fetch torrents info: %v", err)
@@ -56,14 +166,19 @@ func main() {
 		os.Exit(0)
 	}
 
-	initialTorrents, err := apiClient.GetTorrents()
-	if err != nil {
-		log.Fatalf("Failed to fetch torrents: %v", err)
+	if err := apiClient.Login(cfg.Username, cfg.Password); err != nil {
+		setAPIError(err)
+	} else {
+		initialTorrents, ferr := apiClient.GetTorrents()
+		if ferr != nil {
+			setAPIError(ferr)
+		} else {
+			torrentsMu.Lock()
+			torrents = initialTorrents
+			applyFilters()
+			torrentsMu.Unlock()
+		}
 	}
-	torrentsMu.Lock()
-	torrents = initialTorrents
-	applyFilters()
-	torrentsMu.Unlock()
 
 	g, err := gocui.NewGui(gocui.Output256, true)
 	if err != nil {
@@ -83,22 +198,58 @@ func main() {
 		for {
 			select {
 			case <-ticker.C:
-				// Fetch updated torrent data
-				newTorrents, err := apiClient.GetTorrents()
-				if err != nil {
-					log.Printf("Error refreshing torrents: %v", err)
+				apiErrMu.Lock()
+				st := apiErr
+				var shouldRecover bool
+				if st != nil && st.AutoRetry {
+					if atomic.LoadInt32(&apiRecoveryRunning) == 0 {
+						if st.Countdown > 0 {
+							st.Countdown--
+						}
+						st.Footnote = retryFootnote(st)
+						shouldRecover = st.Countdown == 0
+					} else {
+						st.Footnote = "Reconnecting…"
+					}
+				}
+				apiErrMu.Unlock()
+
+				if st != nil {
+					if shouldRecover && atomic.CompareAndSwapInt32(&apiRecoveryRunning, 0, 1) {
+						go func() {
+							defer atomic.StoreInt32(&apiRecoveryRunning, 0)
+							tryRecoverAPISync()
+							g.Update(func(gui *gocui.Gui) error {
+								refreshDetailsPane(gui)
+								return refreshUI(gui)
+							})
+						}()
+					} else {
+						g.Update(func(gui *gocui.Gui) error {
+							return refreshUI(gui)
+						})
+					}
 					continue
 				}
 
-			torrentsMu.Lock()
-			torrents = newTorrents
-			applyFilters()
-			torrentsMu.Unlock()
+				newTorrents, err := apiClient.GetTorrents()
+				if err != nil {
+					g.Update(func(gui *gocui.Gui) error {
+						setAPIError(err)
+						return refreshUI(gui)
+					})
+					continue
+				}
 
-			g.Update(func(g *gocui.Gui) error {
-				refreshDetailsPane(g)
-				return refreshUI(g)
-			})
+				torrentsMu.Lock()
+				torrents = newTorrents
+				applyFilters()
+				torrentsMu.Unlock()
+
+				g.Update(func(gui *gocui.Gui) error {
+					refreshDetailsPane(g)
+					return refreshUI(g)
+				})
 			case <-done:
 				return
 			}
@@ -161,10 +312,77 @@ func layout(g *gocui.Gui) error {
 		drawShortcutsBar(v)
 	}
 
+	if err := layoutAPIErrorOverlay(g, maxX, maxY); err != nil {
+		return err
+	}
+
 	if _, err := g.View(viewOverlay); err != nil {
 		g.SetCurrentView(viewLeft)
 	}
 
+	return nil
+}
+
+// layoutAPIErrorOverlay draws a centered modal-style panel for API connectivity/auth errors, or removes it when healthy.
+func layoutAPIErrorOverlay(g *gocui.Gui, maxX, maxY int) error {
+	apiErrMu.Lock()
+	st := apiErr
+	apiErrMu.Unlock()
+
+	if st == nil {
+		if _, err := g.View(viewAPIError); err == nil {
+			_ = g.DeleteView(viewAPIError)
+		}
+		return nil
+	}
+
+	width := 58
+	if width > maxX-4 {
+		width = maxX - 4
+	}
+	if width < 30 {
+		width = maxX - 2
+		if width < 20 {
+			width = 20
+		}
+	}
+	innerLines := 1 + len(st.Lines) + 2
+	height := innerLines
+	if height > maxY-4 {
+		height = maxY - 4
+	}
+	if height < 5 {
+		height = 5
+	}
+	x0 := (maxX - width) / 2
+	y0 := (maxY - height) / 2
+	if x0 < 0 {
+		x0 = 0
+	}
+	if y0 < 0 {
+		y0 = 0
+	}
+	x1 := x0 + width - 1
+	y1 := y0 + height - 1
+	if x1 >= maxX {
+		x1 = maxX - 1
+	}
+	if y1 >= maxY {
+		y1 = maxY - 1
+	}
+
+	v, err := g.SetView(viewAPIError, x0, y0, x1, y1, 0)
+	if err != nil && !errors.Is(err, gocui.ErrUnknownView) {
+		return err
+	}
+	v.Wrap = true
+	v.Title = st.Title
+	v.Clear()
+	for _, ln := range st.Lines {
+		fmt.Fprintf(v, " %s\n", ln)
+	}
+	fmt.Fprintln(v)
+	fmt.Fprintf(v, " %s%s%s", yellowColor, st.Footnote, resetColor)
 	return nil
 }
 
@@ -440,6 +658,17 @@ func keybindings(g *gocui.Gui, client *QBClient) error {
 	}); err != nil {
 		return err
 	}
+	if err := g.SetKeybinding(viewLeft, 'r', gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
+		apiErrMu.Lock()
+		has := apiErr != nil
+		apiErrMu.Unlock()
+		if has {
+			triggerAPIRetry(g)
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -480,13 +709,21 @@ func cursorUp(g *gocui.Gui, v *gocui.View) error {
 	return nil
 }
 
-// refreshUI refreshes the torrent list view content and cursor position
+// refreshUI refreshes the torrent list, shortcuts bar, API error overlay, and cursor (inputs: g; output: error from view ops).
 func refreshUI(g *gocui.Gui) error {
 	v, err := g.View(viewLeft)
 	if err != nil {
 		return err
 	}
 	refreshTorrentList(g, v)
+	if sv, serr := g.View(viewShortcuts); serr == nil {
+		sv.Clear()
+		drawShortcutsBar(sv)
+	}
+	mx, my := g.Size()
+	if err := layoutAPIErrorOverlay(g, mx, my); err != nil {
+		return err
+	}
 	return v.SetCursor(0, currentSelection+1)
 }
 
@@ -1084,8 +1321,17 @@ func closeOverlay(g *gocui.Gui) error {
 
 // drawShortcutsBar writes the keyboard shortcut hints into the given view.
 func drawShortcutsBar(v *gocui.View) {
+	apiErrMu.Lock()
+	hasAPIErr := apiErr != nil
+	apiErrMu.Unlock()
+	if hasAPIErr {
+		fmt.Fprintf(v, " %sr%s retry now  %sq%s quit",
+			yellowColor, resetColor,
+			yellowColor, resetColor,
+		)
+		return
+	}
 	fmt.Fprintf(v, " %s⎵%s details  %ss%s stop/start  %sd%s delete  %s+%s pri up  %s-%s pri down  %sf%s filter  %sa%s add url  %sm%s magnet  %sq%s quit",
-		yellowColor, resetColor,
 		yellowColor, resetColor,
 		yellowColor, resetColor,
 		yellowColor, resetColor,

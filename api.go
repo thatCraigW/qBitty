@@ -25,7 +25,18 @@ func NewQBClient() (*QBClient, error) {
 	if err != nil {
 		return nil, err
 	}
+	api, err := NewQBClientFromConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if err := api.Login(cfg.Username, cfg.Password); err != nil {
+		return nil, err
+	}
+	return api, nil
+}
 
+// NewQBClientFromConfig builds a QBClient with cookie jar and timeout; does not call Login (for TUI retry flows).
+func NewQBClientFromConfig(cfg *Config) (*QBClient, error) {
 	parsed, err := url.Parse(cfg.URL)
 	if err != nil {
 		return nil, fmt.Errorf("invalid URL: %w", err)
@@ -43,15 +54,10 @@ func NewQBClient() (*QBClient, error) {
 		Timeout: 30 * time.Second,
 	}
 
-	api := &QBClient{
+	return &QBClient{
 		Client:  client,
 		BaseURL: strings.TrimRight(cfg.URL, "/"),
-	}
-
-	if err := api.Login(cfg.Username, cfg.Password); err != nil {
-		return nil, err
-	}
-	return api, nil
+	}, nil
 }
 
 // Login performs POST to /api/v2/auth/login and stores session cookie.
