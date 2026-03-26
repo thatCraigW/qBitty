@@ -39,6 +39,11 @@ var (
 	detailsVisible   bool
 	detailsTab       = 5
 	apiClient        *QBClient
+
+	contentEditMode      bool
+	contentFileSelection int
+	contentFileCache     []TorrentFile
+	contentFileCacheHash string
 )
 
 // apiErrorState holds plain-English overlay text and retry countdown for connection issues.
@@ -618,6 +623,9 @@ func keybindings(g *gocui.Gui, client *QBClient) error {
 	}
 	if err := g.SetKeybinding(viewLeft, gocui.KeySpace, gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
 		detailsVisible = !detailsVisible
+		if !detailsVisible {
+			clearContentEditForTabChange(g)
+		}
 		return nil
 	}); err != nil {
 		return err
@@ -628,7 +636,11 @@ func keybindings(g *gocui.Gui, client *QBClient) error {
 			if !detailsVisible {
 				detailsVisible = true
 			}
+			prevTab := detailsTab
 			detailsTab = tab
+			if prevTab != detailsTab {
+				clearContentEditForTabChange(g)
+			}
 			refreshDetailsPane(g)
 			return nil
 		}); err != nil {
@@ -637,7 +649,11 @@ func keybindings(g *gocui.Gui, client *QBClient) error {
 	}
 	if err := g.SetKeybinding(viewLeft, gocui.KeyArrowLeft, gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
 		if detailsVisible && detailsTab > 1 {
+			prevTab := detailsTab
 			detailsTab--
+			if prevTab != detailsTab {
+				clearContentEditForTabChange(g)
+			}
 			refreshDetailsPane(g)
 		}
 		return nil
@@ -646,7 +662,11 @@ func keybindings(g *gocui.Gui, client *QBClient) error {
 	}
 	if err := g.SetKeybinding(viewLeft, gocui.KeyArrowRight, gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
 		if detailsVisible && detailsTab < 5 {
+			prevTab := detailsTab
 			detailsTab++
+			if prevTab != detailsTab {
+				clearContentEditForTabChange(g)
+			}
 			refreshDetailsPane(g)
 		}
 		return nil
@@ -669,6 +689,16 @@ func keybindings(g *gocui.Gui, client *QBClient) error {
 	}); err != nil {
 		return err
 	}
+	if err := g.SetKeybinding(viewLeft, 'e', gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
+		return toggleContentEditMode(g)
+	}); err != nil {
+		return err
+	}
+	if err := g.SetKeybinding(viewLeft, 'p', gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
+		return contentCyclePriority(g, client)
+	}); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -677,11 +707,21 @@ func quit(g *gocui.Gui, v *gocui.View) error {
 }
 
 func cursorDown(g *gocui.Gui, v *gocui.View) error {
+	if detailsVisible && detailsTab == 5 && contentEditMode {
+		return contentCursorDown(g)
+	}
 	torrentsMu.RLock()
 	count := len(filteredTorrents)
 	torrentsMu.RUnlock()
 	if currentSelection < count-1 {
 		currentSelection++
+		if contentEditMode {
+			contentEditMode = false
+			contentFileSelection = 0
+			if vv, err := g.View(viewDetails); err == nil {
+				_ = vv.SetOrigin(0, 0)
+			}
+		}
 		if err := v.SetCursor(0, currentSelection+1); err != nil {
 			ox, oy := v.Origin()
 			if err := v.SetOrigin(ox, oy+1); err != nil {
@@ -695,8 +735,18 @@ func cursorDown(g *gocui.Gui, v *gocui.View) error {
 }
 
 func cursorUp(g *gocui.Gui, v *gocui.View) error {
+	if detailsVisible && detailsTab == 5 && contentEditMode {
+		return contentCursorUp(g)
+	}
 	if currentSelection > 0 {
 		currentSelection--
+		if contentEditMode {
+			contentEditMode = false
+			contentFileSelection = 0
+			if vv, err := g.View(viewDetails); err == nil {
+				_ = vv.SetOrigin(0, 0)
+			}
+		}
 		if err := v.SetCursor(0, currentSelection+1); err != nil {
 			ox, oy := v.Origin()
 			if err := v.SetOrigin(ox, oy-1); err != nil {
@@ -706,6 +756,136 @@ func cursorUp(g *gocui.Gui, v *gocui.View) error {
 		refreshDetailsPane(g)
 		return refreshUI(g)
 	}
+	return nil
+}
+
+// clearContentEditForTabChange exits file-edit mode when leaving the Content tab or switching tabs (input: g).
+func clearContentEditForTabChange(g *gocui.Gui) {
+	if !contentEditMode {
+		return
+	}
+	contentEditMode = false
+	contentFileSelection = 0
+	if vv, err := g.View(viewDetails); err == nil {
+		_ = vv.SetOrigin(0, 0)
+	}
+}
+
+// contentCursorDown moves selection down one row in Content edit mode (input: g; output: nil).
+func contentCursorDown(g *gocui.Gui) error {
+	if len(contentFileCache) == 0 {
+		return nil
+	}
+	t := getSelectedTorrent()
+	if t == nil || t.Hash != contentFileCacheHash {
+		return nil
+	}
+	if contentFileSelection < len(contentFileCache)-1 {
+		contentFileSelection++
+		refreshDetailsPane(g)
+	}
+	return nil
+}
+
+// contentCursorUp moves selection up one row in Content edit mode (input: g; output: nil).
+func contentCursorUp(g *gocui.Gui) error {
+	if contentFileSelection > 0 {
+		contentFileSelection--
+		refreshDetailsPane(g)
+	}
+	return nil
+}
+
+// scrollContentFileIntoView adjusts the details view origin so the selected file row stays visible (inputs: v, fileCount).
+func scrollContentFileIntoView(v *gocui.View, fileCount int) {
+	if fileCount == 0 {
+		return
+	}
+	const linesBeforeFiles = 4 // tab row + 2 blank lines + column header
+	selLine := linesBeforeFiles + contentFileSelection
+	_, vh := v.Size()
+	if vh < 1 {
+		return
+	}
+	_, oy := v.Origin()
+	if selLine < oy {
+		_ = v.SetOrigin(0, selLine)
+		return
+	}
+	if selLine >= oy+vh {
+		_ = v.SetOrigin(0, selLine-vh+1)
+	}
+}
+
+// nextFilePriority returns the next qBittorrent file priority in cycle: skip → normal → high → maximum (input: current priority).
+func nextFilePriority(p int) int {
+	switch p {
+	case 0:
+		return 1
+	case 1:
+		return 6
+	case 6:
+		return 7
+	case 7:
+		return 0
+	default:
+		return 1
+	}
+}
+
+// contentCyclePriority applies next priority to the selected file in Content edit mode (inputs: g, client; output: nil).
+func contentCyclePriority(g *gocui.Gui, client *QBClient) error {
+	if !contentEditMode {
+		return nil
+	}
+	t := getSelectedTorrent()
+	if t == nil {
+		return nil
+	}
+	if len(contentFileCache) == 0 || contentFileCacheHash != t.Hash {
+		return nil
+	}
+	if contentFileSelection < 0 || contentFileSelection >= len(contentFileCache) {
+		return nil
+	}
+	f := contentFileCache[contentFileSelection]
+	newP := nextFilePriority(f.Priority)
+	if err := client.SetFilePriority(t.Hash, f.Index, newP); err != nil {
+		log.Printf("file priority: %v", err)
+		return nil
+	}
+	refreshDetailsPane(g)
+	return nil
+}
+
+// toggleContentEditMode toggles Content tab file selection mode when on that tab (input: g; output: error from refresh).
+func toggleContentEditMode(g *gocui.Gui) error {
+	if !detailsVisible || detailsTab != 5 {
+		return nil
+	}
+	t := getSelectedTorrent()
+	if t == nil {
+		return nil
+	}
+	if len(contentFileCache) == 0 || contentFileCacheHash != t.Hash {
+		refreshDetailsPane(g)
+		return nil
+	}
+	contentEditMode = !contentEditMode
+	if !contentEditMode {
+		contentFileSelection = 0
+		if vv, err := g.View(viewDetails); err == nil {
+			_ = vv.SetOrigin(0, 0)
+		}
+	} else {
+		if contentFileSelection >= len(contentFileCache) {
+			contentFileSelection = len(contentFileCache) - 1
+		}
+		if contentFileSelection < 0 {
+			contentFileSelection = 0
+		}
+	}
+	refreshDetailsPane(g)
 	return nil
 }
 
@@ -1057,11 +1237,24 @@ func renderContentTab(v *gocui.View, client *QBClient, hash string) {
 	files, err := client.GetTorrentFiles(hash)
 	if err != nil {
 		fmt.Fprintf(v, " Error: %v\n", err)
+		contentFileCache = nil
+		contentFileCacheHash = ""
 		return
 	}
 	if len(files) == 0 {
 		fmt.Fprintln(v, " No files")
+		contentFileCache = nil
+		contentFileCacheHash = hash
 		return
+	}
+
+	contentFileCache = append([]TorrentFile(nil), files...)
+	contentFileCacheHash = hash
+	if contentFileSelection >= len(files) {
+		contentFileSelection = len(files) - 1
+	}
+	if contentFileSelection < 0 {
+		contentFileSelection = 0
 	}
 
 	sizeW := 10
@@ -1079,14 +1272,37 @@ func renderContentTab(v *gocui.View, client *QBClient, hash string) {
 	fmt.Fprintf(v, " %s%-*s %*s %*s %-*s%s\n",
 		grey, nameW, "Name", sizeW, "Size", progW, "Prog", prioW, "Priority", resetColor)
 
-	for _, f := range files {
-		fmt.Fprintf(v, " %-*s %*s %5.1f%% %-*s\n",
+	selBg := "\033[44;97m"
+	for i, f := range files {
+		prefix := " "
+		suffix := ""
+		if contentEditMode && i == contentFileSelection {
+			prefix = " " + selBg
+			suffix = resetColor
+		}
+		fmt.Fprintf(v, "%s%-*s %*s %5.1f%% %-*s%s\n",
+			prefix,
 			nameW, truncateName(f.Name, nameW),
 			sizeW, formatSize(f.Size),
 			f.Progress*100,
-			prioW, filePriorityStr(f.Priority))
+			prioW, filePriorityStr(f.Priority),
+			suffix)
 	}
 	fmt.Fprintf(v, "\n %sTotal: %d files%s\n", grey, len(files), resetColor)
+	if contentEditMode {
+		fmt.Fprintf(v, " %s↑↓%s move  %sp%s priority  %se%s exit",
+			yellowColor, resetColor,
+			yellowColor, resetColor,
+			yellowColor, resetColor,
+		)
+	} else {
+		fmt.Fprintf(v, " %se%s edit file priority", yellowColor, resetColor)
+	}
+	if !contentEditMode {
+		_ = v.SetOrigin(0, 0)
+	} else {
+		scrollContentFileIntoView(v, len(files))
+	}
 }
 
 // formatTimestamp converts a unix timestamp to a readable string, or "--" if invalid.
@@ -1332,6 +1548,7 @@ func drawShortcutsBar(v *gocui.View) {
 		return
 	}
 	fmt.Fprintf(v, " %s⎵%s details  %ss%s stop/start  %sd%s delete  %s+%s pri up  %s-%s pri down  %sf%s filter  %sa%s add url  %sm%s magnet  %sq%s quit",
+		yellowColor, resetColor,
 		yellowColor, resetColor,
 		yellowColor, resetColor,
 		yellowColor, resetColor,

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -229,4 +230,13 @@ func (c *QBClient) GetTorrentFiles(hash string) ([]TorrentFile, error) {
 	var files []TorrentFile
 	err := c.getJSON("/api/v2/torrents/files?hash="+hash, &files)
 	return files, err
+}
+
+// SetFilePriority sets one file's download priority for a torrent (0 skip, 1 normal, 6 high, 7 maximum); inputs hash/file id/priority, output error from API.
+func (c *QBClient) SetFilePriority(hash string, fileID int, priority int) error {
+	return c.postAction("/api/v2/torrents/filePrio", url.Values{
+		"hash":     {hash},
+		"id":       {strconv.Itoa(fileID)},
+		"priority": {strconv.Itoa(priority)},
+	})
 }
