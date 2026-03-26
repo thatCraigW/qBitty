@@ -10,22 +10,53 @@ A terminal UI client for qBittorrent, built with Go and [gocui](https://github.c
   - **Trackers** -- tracker URLs, status, seed/peer/leech counts
   - **Peers** -- connected peers with client, speed, country info
   - **HTTP Sources** -- web seed URLs
-  - **Content** -- file list with size, progress, and priority
+  - **Content** -- file list with size, progress, and priority; **`e`** enters edit mode to change per-file priority (**`p`** cycles Skip → Normal → High → Maximum)
 - Filter torrents by status and/or category
 - Torrent actions: stop/start, delete, increase/decrease priority
 - Add new torrents by URL or magnet link
 - Auto-refreshes every second
+- **When qBittorrent is unreachable or login fails**, the app stays open with a short explanation, an empty list, **`r`** to retry manually, and (for connection issues) a **10s countdown** before automatic retry
+
+### What’s new in v0.2.0
+
+- Clear **plain-English errors** when the Web UI cannot be reached or credentials are wrong (no sudden exit)
+- **Automatic reconnect** with countdown for connectivity problems; **`r`** retry any time the status banner is shown
+- **Content tab:** **`e`** / **`↑` `↓`** / **`p`** to inspect and cycle file download priority (qBittorrent API)
+- **Stability:** fixed a crash when classifying some DNS/network errors
+- **UI:** shortcut bar labels render correctly again
 
 ## Requirements
 
-- Go 1.22+
+- **From source:** Go 1.22+
 - A running qBittorrent instance with the WebUI API enabled
 
 ## Installation
 
+### Homebrew (recommended)
+
+If you use a custom tap that ships this formula (for example `thatcraigw/tap` from [`homebrew-tap`](https://github.com/thatCraigW/homebrew-tap)):
+
+```bash
+brew tap thatcraigw/tap
+brew install qbitty
+```
+
+Upgrade after a new release:
+
+```bash
+brew update
+brew upgrade qbitty
+```
+
+If your tap path differs, replace `thatcraigw/tap` with the name you used with `brew tap`.
+
+### Build from source
+
 ```bash
 go build -o qbitty .
 ```
+
+Install the binary somewhere on your `PATH` if you want to run `qbitty` from anywhere.
 
 ## Configuration
 
@@ -86,30 +117,34 @@ Then point the WebUI settings to `qbt-cert.pem` and `qbt-key.pem`.
 
 ```bash
 # Launch the TUI (config file)
-./qbitty
+qbitty
+# or, from the build directory: ./qbitty
 
 # Or with env vars
-QB_URL=https://localhost:8080 QB_USER=admin QB_PASS=secret ./qbitty
+QB_URL=https://localhost:8080 QB_USER=admin QB_PASS=secret qbitty
 
-# Dump raw torrent JSON to stdout
-./qbitty --dump-json
+# Dump raw torrent JSON to stdout (still exits on login failure)
+qbitty --dump-json
 ```
 
 ## Keyboard Shortcuts
 
-| Key         | Action                                      |
-|-------------|---------------------------------------------|
-| `Up/Down`   | Navigate torrent list                       |
-| `Space`     | Toggle details pane                         |
-| `1-5`       | Switch details tab (opens pane if closed)   |
-| `Left/Right`| Switch details tab                          |
-| `s`         | Stop/start selected torrent                 |
-| `d`         | Delete selected torrent (with confirmation) |
-| `+` / `-`   | Increase/decrease queue priority            |
-| `f`         | Filter by status and/or category            |
-| `a`         | Add torrent by URL                          |
-| `m`         | Add torrent by magnet link                  |
-| `q`         | Quit                                        |
+| Key         | Action                                                                 |
+|-------------|------------------------------------------------------------------------|
+| `Up/Down`   | Navigate torrent list; on **Content** tab with **`e`** edit on, move file row |
+| `Space`     | Toggle details pane                                                    |
+| `1-5`       | Switch details tab (opens pane if closed)                              |
+| `Left/Right`| Switch details tab                                                     |
+| `s`         | Stop/start selected torrent                                            |
+| `d`         | Delete selected torrent (with confirmation)                            |
+| `+` / `-`   | Increase/decrease queue priority                                       |
+| `e`         | On **Content** tab: toggle file-priority edit (`e` again to exit)      |
+| `p`         | In file edit mode: cycle priority (Skip → Normal → High → Maximum)   |
+| `f`         | Filter by status and/or category                                       |
+| `a`         | Add torrent by URL                                                     |
+| `m`         | Add torrent by magnet link                                             |
+| `r`         | When the connection/login banner is visible: retry now                 |
+| `q`         | Quit                                                                   |
 
 ## License
 
