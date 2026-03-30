@@ -295,8 +295,8 @@ func layout(g *gocui.Gui) error {
 		v.SelBgColor = gocui.ColorBlue
 		v.SelFgColor = gocui.ColorWhite
 		refreshTorrentList(g, v)
-		v.SetCursor(0, currentSelection)
-		v.SetOrigin(0, currentSelection)
+		scrollTorrentListSelectionIntoView(v)
+		_ = v.SetCursor(0, currentSelection+1)
 	}
 
 	if detailsVisible {
@@ -498,6 +498,45 @@ func scrollContentFileNameColumn(g *gocui.Gui, delta int) bool {
 		contentNameScrollOffset = maxScroll
 	}
 	return contentNameScrollOffset != prev
+}
+
+// scrollTorrentListSelectionIntoView sets the torrent list view origin so the header + selected row stay in the visible area (input: v).
+func scrollTorrentListSelectionIntoView(v *gocui.View) {
+	torrentsMu.RLock()
+	n := len(filteredTorrents)
+	torrentsMu.RUnlock()
+	lineCount := 1 + n
+	_, vh := v.Size()
+	if vh < 1 {
+		return
+	}
+	// Size().Y counts inner rows; one fewer line is actually drawable with the
+	// framed title, matching linesPosOnScreen/cursor visibility (avoids selection one row past the last painted line).
+	visibleH := vh - 1
+	if visibleH < 1 {
+		visibleH = 1
+	}
+	var selLine int
+	if n == 0 {
+		selLine = 0
+	} else {
+		selLine = currentSelection + 1
+		if selLine > lineCount-1 {
+			selLine = lineCount - 1
+		}
+	}
+	maxOy := lineCount - visibleH
+	if maxOy < 0 {
+		maxOy = 0
+	}
+	oy := 0
+	if selLine >= visibleH {
+		oy = selLine - visibleH + 1
+	}
+	if oy > maxOy {
+		oy = maxOy
+	}
+	_ = v.SetOrigin(0, oy)
 }
 
 func refreshTorrentList(g *gocui.Gui, v *gocui.View) {
@@ -856,12 +895,6 @@ func cursorDown(g *gocui.Gui, v *gocui.View) error {
 				_ = vv.SetOrigin(0, 0)
 			}
 		}
-		if err := v.SetCursor(0, currentSelection+1); err != nil {
-			ox, oy := v.Origin()
-			if err := v.SetOrigin(ox, oy+1); err != nil {
-				return err
-			}
-		}
 		refreshDetailsPane(g)
 		return refreshUI(g)
 	}
@@ -881,12 +914,6 @@ func cursorUp(g *gocui.Gui, v *gocui.View) error {
 			contentFileSelection = 0
 			if vv, err := g.View(viewDetails); err == nil {
 				_ = vv.SetOrigin(0, 0)
-			}
-		}
-		if err := v.SetCursor(0, currentSelection+1); err != nil {
-			ox, oy := v.Origin()
-			if err := v.SetOrigin(ox, oy-1); err != nil {
-				return err
 			}
 		}
 		refreshDetailsPane(g)
@@ -1043,6 +1070,7 @@ func refreshUI(g *gocui.Gui) error {
 	if err := layoutAPIErrorOverlay(g, mx, my); err != nil {
 		return err
 	}
+	scrollTorrentListSelectionIntoView(v)
 	return v.SetCursor(0, currentSelection+1)
 }
 
