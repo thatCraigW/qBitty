@@ -34,16 +34,18 @@ var (
 	filteredTorrents []Torrent
 	torrentsMu       sync.RWMutex
 	currentSelection int
+	nameScrollOffset int // horizontal scroll into long names (rune index into selected torrent name)
 	filterStatus     string
 	filterCategory   string
 	detailsVisible   bool
 	detailsTab       = 5
 	apiClient        *QBClient
 
-	contentEditMode      bool
-	contentFileSelection int
-	contentFileCache     []TorrentFile
-	contentFileCacheHash string
+	contentEditMode         bool
+	contentFileSelection    int
+	contentNameScrollOffset int // horizontal scroll for selected file name on Content tab (rune index)
+	contentFileCache        []TorrentFile
+	contentFileCacheHash    string
 )
 
 // apiErrorState holds plain-English overlay text and retry countdown for connection issues.
@@ -391,23 +393,126 @@ func layoutAPIErrorOverlay(g *gocui.Gui, maxX, maxY int) error {
 	return nil
 }
 
-func refreshTorrentList(g *gocui.Gui, v *gocui.View) {
-	maxX, _ := g.Size()
-
-	// Fixed widths
-	statusWidth := 12
-	progressWidth := 9
-	dlSpeedWidth := 12
-	ulSpeedWidth := 12
-	etaWidth := 6
-	sizeWidth := 10
-	seedsPeersWidth := 10
-	padding := 8
-
+// nameWidthForTorrentList returns the Name column width in monospace cells for a terminal of width maxX.
+func nameWidthForTorrentList(maxX int) int {
+	const (
+		statusWidth     = 12
+		progressWidth   = 9
+		dlSpeedWidth    = 12
+		ulSpeedWidth    = 12
+		etaWidth        = 6
+		sizeWidth       = 10
+		seedsPeersWidth = 10
+		padding         = 8
+	)
 	nameWidth := maxX - (statusWidth + progressWidth + dlSpeedWidth + ulSpeedWidth + etaWidth + sizeWidth + seedsPeersWidth + padding)
 	if nameWidth < 20 {
 		nameWidth = 20
 	}
+	return nameWidth
+}
+
+// torrentNameCell returns a padded name field for one row: ellipsis truncation, or horizontal slice when selected and long (inputs: full name, column width, scroll offset in runes, selected; output: padded string of width colWidth).
+func torrentNameCell(full string, colWidth int, scroll int, selected bool) string {
+	rs := []rune(full)
+	if len(rs) <= colWidth {
+		return fmt.Sprintf("%-*s", colWidth, string(rs))
+	}
+	if !selected {
+		return fmt.Sprintf("%-*s", colWidth, truncateName(full, colWidth-1))
+	}
+	maxScroll := len(rs) - colWidth
+	s := scroll
+	if s < 0 {
+		s = 0
+	}
+	if s > maxScroll {
+		s = maxScroll
+	}
+	vis := string(rs[s : s+colWidth])
+	return fmt.Sprintf("%-*s", colWidth, vis)
+}
+
+// scrollNameColumn moves the name viewport by delta runes when the selected name overflows; returns true if the list should redraw (inputs: g, delta; output: whether offset changed).
+func scrollNameColumn(g *gocui.Gui, delta int) bool {
+	t := getSelectedTorrent()
+	if t == nil {
+		return false
+	}
+	maxX, _ := g.Size()
+	nw := nameWidthForTorrentList(maxX)
+	rs := []rune(t.Name)
+	if len(rs) <= nw {
+		return false
+	}
+	maxScroll := len(rs) - nw
+	prev := nameScrollOffset
+	nameScrollOffset += delta
+	if nameScrollOffset < 0 {
+		nameScrollOffset = 0
+	}
+	if nameScrollOffset > maxScroll {
+		nameScrollOffset = maxScroll
+	}
+	return nameScrollOffset != prev
+}
+
+// contentTabNameWidth returns the file name column width in the Content tab for the given details view (input: v; output: width in cells).
+func contentTabNameWidth(v *gocui.View) int {
+	viewW, _ := v.Size()
+	const (
+		sizeW = 10
+		progW = 7
+		prioW = 8
+	)
+	fixedW := sizeW + progW + prioW + 4
+	nameW := viewW - fixedW
+	if nameW < 20 {
+		nameW = 20
+	}
+	return nameW
+}
+
+// scrollContentFileNameColumn moves the file name viewport on the Content tab; returns true if the details pane should redraw (inputs: g, delta; output: whether offset changed).
+func scrollContentFileNameColumn(g *gocui.Gui, delta int) bool {
+	v, err := g.View(viewDetails)
+	if err != nil {
+		return false
+	}
+	if len(contentFileCache) == 0 || contentFileSelection < 0 || contentFileSelection >= len(contentFileCache) {
+		return false
+	}
+	nameW := contentTabNameWidth(v)
+	f := contentFileCache[contentFileSelection]
+	rs := []rune(f.Name)
+	if len(rs) <= nameW {
+		return false
+	}
+	maxScroll := len(rs) - nameW
+	prev := contentNameScrollOffset
+	contentNameScrollOffset += delta
+	if contentNameScrollOffset < 0 {
+		contentNameScrollOffset = 0
+	}
+	if contentNameScrollOffset > maxScroll {
+		contentNameScrollOffset = maxScroll
+	}
+	return contentNameScrollOffset != prev
+}
+
+func refreshTorrentList(g *gocui.Gui, v *gocui.View) {
+	maxX, _ := g.Size()
+	nameWidth := nameWidthForTorrentList(maxX)
+
+	const (
+		statusWidth     = 12
+		progressWidth   = 9
+		dlSpeedWidth    = 12
+		ulSpeedWidth    = 12
+		etaWidth        = 6
+		sizeWidth       = 10
+		seedsPeersWidth = 10
+	)
 
 	v.Clear()
 
@@ -416,6 +521,18 @@ func refreshTorrentList(g *gocui.Gui, v *gocui.View) {
 	fStatus := filterStatus
 	fCategory := filterCategory
 	torrentsMu.RUnlock()
+
+	if currentSelection >= 0 && currentSelection < len(localTorrents) {
+		rs := []rune(localTorrents[currentSelection].Name)
+		if len(rs) > nameWidth {
+			maxScroll := len(rs) - nameWidth
+			if nameScrollOffset > maxScroll {
+				nameScrollOffset = maxScroll
+			}
+		} else {
+			nameScrollOffset = 0
+		}
+	}
 
 	title := "Torrents"
 	if fStatus != "" || fCategory != "" {
@@ -442,12 +559,12 @@ func refreshTorrentList(g *gocui.Gui, v *gocui.View) {
 		seedsPeersWidth, "Seeds/Peers",
 		resetColor)
 
-	for _, t := range localTorrents {
+	for i, t := range localTorrents {
 		colorState := colorForState(t.State)
 		downloadSpeedColor := colorForSpeed(t.DownloadSpeed)
 		uploadSpeedColor := colorForSpeed(t.UploadSpeed)
 
-		name := truncateName(t.Name, nameWidth-1)
+		nameCol := torrentNameCell(t.Name, nameWidth, nameScrollOffset, i == currentSelection)
 		dlSpeedStr := formatSpeed(t.DownloadSpeed)
 		uploadSpeedStr := formatSpeed(t.UploadSpeed)
 		sizeStr := formatSize(t.Size)
@@ -465,7 +582,6 @@ func refreshTorrentList(g *gocui.Gui, v *gocui.View) {
 			uploadSpeedStr = "--"
 		}
 
-		nameCol := fmt.Sprintf("%-*s", nameWidth, name)
 		progressCol := fmt.Sprintf("%*s", progressWidth, fmt.Sprintf("%.2f%%", t.Progress*100))
 		statusCol := fmt.Sprintf("%s%-*s%s", colorState, statusWidth, cleanStatus, resetColor)
 		dlSpeedCol := fmt.Sprintf("%s%-*s%s", downloadSpeedColor, dlSpeedWidth, dlSpeedStr, resetColor)
@@ -648,6 +764,10 @@ func keybindings(g *gocui.Gui, client *QBClient) error {
 		}
 	}
 	if err := g.SetKeybinding(viewLeft, gocui.KeyArrowLeft, gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
+		if detailsVisible && detailsTab == 5 && scrollContentFileNameColumn(g, -1) {
+			refreshDetailsPane(g)
+			return nil
+		}
 		if detailsVisible && detailsTab > 1 {
 			prevTab := detailsTab
 			detailsTab--
@@ -655,12 +775,20 @@ func keybindings(g *gocui.Gui, client *QBClient) error {
 				clearContentEditForTabChange(g)
 			}
 			refreshDetailsPane(g)
+			return nil
+		}
+		if scrollNameColumn(g, -1) {
+			return refreshUI(g)
 		}
 		return nil
 	}); err != nil {
 		return err
 	}
 	if err := g.SetKeybinding(viewLeft, gocui.KeyArrowRight, gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
+		if detailsVisible && detailsTab == 5 && scrollContentFileNameColumn(g, 1) {
+			refreshDetailsPane(g)
+			return nil
+		}
 		if detailsVisible && detailsTab < 5 {
 			prevTab := detailsTab
 			detailsTab++
@@ -668,6 +796,10 @@ func keybindings(g *gocui.Gui, client *QBClient) error {
 				clearContentEditForTabChange(g)
 			}
 			refreshDetailsPane(g)
+			return nil
+		}
+		if scrollNameColumn(g, 1) {
+			return refreshUI(g)
 		}
 		return nil
 	}); err != nil {
@@ -715,6 +847,8 @@ func cursorDown(g *gocui.Gui, v *gocui.View) error {
 	torrentsMu.RUnlock()
 	if currentSelection < count-1 {
 		currentSelection++
+		nameScrollOffset = 0
+		contentNameScrollOffset = 0
 		if contentEditMode {
 			contentEditMode = false
 			contentFileSelection = 0
@@ -740,6 +874,8 @@ func cursorUp(g *gocui.Gui, v *gocui.View) error {
 	}
 	if currentSelection > 0 {
 		currentSelection--
+		nameScrollOffset = 0
+		contentNameScrollOffset = 0
 		if contentEditMode {
 			contentEditMode = false
 			contentFileSelection = 0
@@ -782,6 +918,7 @@ func contentCursorDown(g *gocui.Gui) error {
 	}
 	if contentFileSelection < len(contentFileCache)-1 {
 		contentFileSelection++
+		contentNameScrollOffset = 0
 		refreshDetailsPane(g)
 	}
 	return nil
@@ -791,6 +928,7 @@ func contentCursorDown(g *gocui.Gui) error {
 func contentCursorUp(g *gocui.Gui) error {
 	if contentFileSelection > 0 {
 		contentFileSelection--
+		contentNameScrollOffset = 0
 		refreshDetailsPane(g)
 	}
 	return nil
@@ -874,6 +1012,7 @@ func toggleContentEditMode(g *gocui.Gui) error {
 	contentEditMode = !contentEditMode
 	if !contentEditMode {
 		contentFileSelection = 0
+		contentNameScrollOffset = 0
 		if vv, err := g.View(viewDetails); err == nil {
 			_ = vv.SetOrigin(0, 0)
 		}
@@ -1073,6 +1212,9 @@ func renderDetailsTab(v *gocui.View, client *QBClient, hash string, tab int) {
 	v.Clear()
 	v.SetOrigin(0, 0)
 	v.SetCursor(0, 0)
+	if tab != 5 {
+		contentNameScrollOffset = 0
+	}
 	writeTabHeaders(v, tab)
 
 	switch tab {
@@ -1260,12 +1402,18 @@ func renderContentTab(v *gocui.View, client *QBClient, hash string) {
 	sizeW := 10
 	progW := 7
 	prioW := 8
-	fixedW := sizeW + progW + prioW + 4 // 4 for leading space + gaps between cols
 
-	viewW, _ := v.Size()
-	nameW := viewW - fixedW
-	if nameW < 20 {
-		nameW = 20
+	nameW := contentTabNameWidth(v)
+	if contentFileSelection >= 0 && contentFileSelection < len(files) {
+		rs := []rune(files[contentFileSelection].Name)
+		if len(rs) > nameW {
+			maxScroll := len(rs) - nameW
+			if contentNameScrollOffset > maxScroll {
+				contentNameScrollOffset = maxScroll
+			}
+		} else {
+			contentNameScrollOffset = 0
+		}
 	}
 
 	grey := "\033[38;5;245m"
@@ -1280,9 +1428,10 @@ func renderContentTab(v *gocui.View, client *QBClient, hash string) {
 			prefix = " " + selBg
 			suffix = resetColor
 		}
-		fmt.Fprintf(v, "%s%-*s %*s %5.1f%% %-*s%s\n",
+		nameCell := torrentNameCell(f.Name, nameW, contentNameScrollOffset, i == contentFileSelection)
+		fmt.Fprintf(v, "%s%s %*s %5.1f%% %-*s%s\n",
 			prefix,
-			nameW, truncateName(f.Name, nameW),
+			nameCell,
 			sizeW, formatSize(f.Size),
 			f.Progress*100,
 			prioW, filePriorityStr(f.Priority),
@@ -1290,13 +1439,14 @@ func renderContentTab(v *gocui.View, client *QBClient, hash string) {
 	}
 	fmt.Fprintf(v, "\n %sTotal: %d files%s\n", grey, len(files), resetColor)
 	if contentEditMode {
-		fmt.Fprintf(v, " %s↑↓%s move  %sp%s priority  %se%s exit",
+		fmt.Fprintf(v, " %s↑↓%s move  %sp%s priority  %se%s exit  %s←→%s name",
+			yellowColor, resetColor,
 			yellowColor, resetColor,
 			yellowColor, resetColor,
 			yellowColor, resetColor,
 		)
 	} else {
-		fmt.Fprintf(v, " %se%s edit file priority", yellowColor, resetColor)
+		fmt.Fprintf(v, " %se%s edit  %s←→%s scroll name", yellowColor, resetColor, yellowColor, resetColor)
 	}
 	if !contentEditMode {
 		_ = v.SetOrigin(0, 0)
@@ -1347,6 +1497,7 @@ func filePriorityStr(priority int) string {
 
 // applyFilters rebuilds filteredTorrents from torrents using active filters. Must be called with torrentsMu held.
 func applyFilters() {
+	oldSel := currentSelection
 	filtered := make([]Torrent, 0, len(torrents))
 	for _, t := range torrents {
 		if filterStatus != "" && cleanStatusString(t.State) != filterStatus {
@@ -1364,6 +1515,10 @@ func applyFilters() {
 		} else {
 			currentSelection = 0
 		}
+	}
+	if currentSelection != oldSel {
+		nameScrollOffset = 0
+		contentNameScrollOffset = 0
 	}
 }
 
@@ -1506,6 +1661,8 @@ func showFilterDialog(g *gocui.Gui) error {
 		applyFilters()
 		torrentsMu.Unlock()
 		closeOverlay(g)
+		nameScrollOffset = 0
+		contentNameScrollOffset = 0
 		return refreshUI(g)
 	})
 	g.SetKeybinding(viewOverlay, 'r', gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
@@ -1515,6 +1672,8 @@ func showFilterDialog(g *gocui.Gui) error {
 		applyFilters()
 		torrentsMu.Unlock()
 		closeOverlay(g)
+		nameScrollOffset = 0
+		contentNameScrollOffset = 0
 		return refreshUI(g)
 	})
 	g.SetKeybinding(viewOverlay, gocui.KeyEsc, gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
@@ -1547,7 +1706,8 @@ func drawShortcutsBar(v *gocui.View) {
 		)
 		return
 	}
-	fmt.Fprintf(v, " %s⎵%s details  %ss%s stop/start  %sd%s delete  %s+%s pri up  %s-%s pri down  %sf%s filter  %sa%s add url  %sm%s magnet  %sq%s quit",
+	fmt.Fprintf(v, " %s←→%s name  %s⎵%s details  %ss%s stop/start  %sd%s delete  %s+%s pri up  %s-%s pri down  %sf%s filter  %sa%s add url  %sm%s magnet  %sq%s quit",
+		yellowColor, resetColor,
 		yellowColor, resetColor,
 		yellowColor, resetColor,
 		yellowColor, resetColor,
