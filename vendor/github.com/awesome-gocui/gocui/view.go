@@ -29,6 +29,12 @@ var (
 	ErrInvalidPoint = errors.New("invalid point")
 )
 
+// FooterSpan is one fragment of a footer line with its own foreground color (used with View.FooterSpans).
+type FooterSpan struct {
+	Text string
+	Fg   Attribute
+}
+
 // A View is a window. It maintains its own internal buffer and cursor
 // position.
 type View struct {
@@ -126,6 +132,9 @@ type View struct {
 	// Footer is drawn right-aligned on the bottom frame row (y1), replacing box-drawing
 	// characters between the bottom corners (lazygit/jesseduffield gocui style).
 	Footer string
+
+	// FooterSpans draws the footer as colored segments (right-aligned); when non-empty, Footer is ignored.
+	FooterSpans []FooterSpan
 
 	// If Mask is true, the View will display the mask instead of the real
 	// content

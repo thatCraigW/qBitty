@@ -305,7 +305,8 @@ func layout(g *gocui.Gui) error {
 		_ = v.SetCursor(0, currentSelection+1)
 	}
 	if lv, lerr := g.View(viewLeft); lerr == nil {
-		lv.Footer = torrentFooterPlain()
+		lv.Footer = ""
+		lv.FooterSpans = torrentFooterSpans()
 		lv.FrameRunes = roundedFrameRunes
 	}
 
@@ -329,12 +330,14 @@ func layout(g *gocui.Gui) error {
 		g.DeleteView(viewDetails)
 	}
 
-	// One inner row for key hints (y0=maxY-2 … y1=maxY).
+	// One inner row for key hints (y0=maxY-2 … y1=maxY); lazygit default gui.theme.optionsTextColor is blue.
 	v, err := g.SetView(viewShortcuts, 0, maxY-2, maxX-1, maxY, 0)
 	if err != nil && !errors.Is(err, gocui.ErrUnknownView) {
 		return err
 	}
 	v.Frame = false
+	v.FgColor = gocui.ColorBlue
+	v.BgColor = gocui.ColorDefault
 	drawBottomPanel(v)
 
 	if err := layoutAPIErrorOverlay(g, maxX, maxY); err != nil {
@@ -1081,7 +1084,8 @@ func refreshUI(g *gocui.Gui) error {
 		return err
 	}
 	refreshTorrentList(g, v)
-	v.Footer = torrentFooterPlain()
+	v.Footer = ""
+	v.FooterSpans = torrentFooterSpans()
 	if sv, serr := g.View(viewShortcuts); serr == nil {
 		drawBottomPanel(sv)
 	}
@@ -1487,15 +1491,21 @@ func renderContentTab(v *gocui.View, client *QBClient, hash string) {
 			suffix)
 	}
 	fmt.Fprintf(v, "\n %sTotal: %d files%s\n", grey, len(files), resetColor)
+	// Same scheme as main shortcuts bar: yellow keys, blue descriptions (explicit blue; view holds mixed tab content).
 	if contentEditMode {
-		fmt.Fprintf(v, " %s↑↓%s move  %sp%s priority  %se%s exit  %s←→%s name",
-			yellowColor, resetColor,
-			yellowColor, resetColor,
-			yellowColor, resetColor,
-			yellowColor, resetColor,
+		fmt.Fprintf(v, " %s↑↓%s%s move  %sp%s%s priority  %se%s%s exit  %s←→%s%s name%s",
+			yellowColor, resetColor, blueColor,
+			yellowColor, resetColor, blueColor,
+			yellowColor, resetColor, blueColor,
+			yellowColor, resetColor, blueColor,
+			resetColor,
 		)
 	} else {
-		fmt.Fprintf(v, " %se%s edit  %s←→%s scroll name", yellowColor, resetColor, yellowColor, resetColor)
+		fmt.Fprintf(v, " %se%s%s edit  %s←→%s%s scroll name%s",
+			yellowColor, resetColor, blueColor,
+			yellowColor, resetColor, blueColor,
+			resetColor,
+		)
 	}
 	if !contentEditMode {
 		_ = v.SetOrigin(0, 0)
@@ -1744,8 +1754,8 @@ func closeOverlay(g *gocui.Gui) error {
 	return err
 }
 
-// torrentFooterPlain returns plain text for the torrent panel bottom border (right-aligned by gocui drawListFooter; output: single line, no ANSI).
-func torrentFooterPlain() string {
+// torrentFooterSpans returns grey label and white value segments for the torrent footer (input: none; output: spans for drawListFooter).
+func torrentFooterSpans() []gocui.FooterSpan {
 	torrentsMu.RLock()
 	list := torrents
 	torrentsMu.RUnlock()
@@ -1762,8 +1772,20 @@ func torrentFooterPlain() string {
 		dlTotal += t.DownloadSpeed
 		ulTotal += t.UploadSpeed
 	}
-	return fmt.Sprintf(" Active %d  Inactive %d  Peers %d  Down %s  Up %s",
-		active, inactive, peerSum, formatSpeed(dlTotal), formatSpeed(ulTotal))
+	grey := gocui.Get256Color(240)
+	white := gocui.ColorWhite
+	return []gocui.FooterSpan{
+		{Text: " Active ", Fg: grey},
+		{Text: fmt.Sprintf("%d", active), Fg: white},
+		{Text: "  Inactive ", Fg: grey},
+		{Text: fmt.Sprintf("%d", inactive), Fg: white},
+		{Text: "  Peers ", Fg: grey},
+		{Text: fmt.Sprintf("%d", peerSum), Fg: white},
+		{Text: "  Down ", Fg: grey},
+		{Text: formatSpeed(dlTotal), Fg: white},
+		{Text: "  Up ", Fg: grey},
+		{Text: formatSpeed(ulTotal), Fg: white},
+	}
 }
 
 // drawBottomPanel writes shortcut hints into the shortcuts view (input: v; output: one-line hints).
@@ -1784,6 +1806,7 @@ func writeShortcutsBarContent(v *gocui.View) {
 		)
 		return
 	}
+	// Keys in yellow (lazygit-style); descriptions use view FgColor (blue).
 	fmt.Fprintf(v, " %s←→%s name  %s⎵%s details  %ss%s stop/start  %sd%s delete  %s+%s pri up  %s-%s pri down  %sf%s filter  %sa%s add url  %sm%s magnet  %sq%s quit",
 		yellowColor, resetColor,
 		yellowColor, resetColor,

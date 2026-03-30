@@ -625,7 +625,7 @@ func (g *Gui) flush() error {
 					return err
 				}
 			}
-			if v.Footer != "" {
+			if v.Footer != "" || len(v.FooterSpans) > 0 {
 				if err := g.drawListFooter(v, frameColor, bgColor); err != nil {
 					return err
 				}
@@ -842,13 +842,45 @@ func (g *Gui) drawSubtitle(v *View, fgColor, bgColor Attribute) error {
 	return nil
 }
 
-// drawListFooter draws Footer right-aligned on the bottom border row (y1), replacing horizontal rule cells between corners (inputs: view, frame fg/bg).
+// drawListFooter draws Footer or FooterSpans right-aligned on the bottom border row (y1) (inputs: view, frame fg/bg for plain Footer only).
 func (g *Gui) drawListFooter(v *View, fgColor, bgColor Attribute) error {
-	msg := v.Footer
-	if msg == "" || v.y1 < 0 || v.y1 >= g.maxY {
+	if v.y1 < 0 || v.y1 >= g.maxY {
 		return nil
 	}
 	innerLeft, innerRight := v.x0+1, v.x1-1
+
+	if len(v.FooterSpans) > 0 {
+		var w int
+		for _, sp := range v.FooterSpans {
+			w += runewidth.StringWidth(sp.Text)
+		}
+		start := innerRight - w + 1
+		if start < innerLeft {
+			return nil
+		}
+		x := start
+		for _, sp := range v.FooterSpans {
+			for _, ch := range sp.Text {
+				if x > innerRight {
+					return nil
+				}
+				fg := sp.Fg
+				if fg == ColorDefault {
+					fg = fgColor
+				}
+				if err := g.SetRune(x, v.y1, ch, fg, bgColor); err != nil {
+					return err
+				}
+				x += runewidth.RuneWidth(ch)
+			}
+		}
+		return nil
+	}
+
+	msg := v.Footer
+	if msg == "" {
+		return nil
+	}
 	w := runewidth.StringWidth(msg)
 	start := innerRight - w + 1
 	if start < innerLeft {
