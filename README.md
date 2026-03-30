@@ -2,9 +2,26 @@
 
 A terminal UI client for qBittorrent, built with Go and [gocui](https://github.com/awesome-gocui/gocui).
 
+## Screenshots
+
+Terminal captures from **2026-03-30** (bundled under [`docs/screenshots/`](docs/screenshots/)):
+
+**Main torrent list** — status, speeds, and columns; long torrent names can be scrolled horizontally with **←** / **→** when the name does not fit the column.
+
+![Main torrent list](docs/screenshots/qbitty-1-main-list.png)
+
+**Details pane, Content tab — file priority edit mode** — press **`e`**, use **↑** / **↓** to choose a file, **`p`** to cycle priority; **←** / **→** scroll long file paths in the Name column.
+
+![Content tab with file edit mode](docs/screenshots/qbitty-2-content-edit.png)
+
+**Details pane, Content tab — browse mode** — **`e`** enters edit mode; **←** / **→** scroll the selected file name when paths are wider than the column.
+
+![Content tab (browse mode)](docs/screenshots/qbitty-3-content-browse.png)
+
 ## Features
 
 - Real-time torrent list with status, progress, speeds, ETA, size, and seed/peer counts
+- **Long names:** **←** / **→** scroll the torrent name in the list (when it exceeds the Name column). On the **Content** tab, the same keys scroll the file path for the selected row (after **`e`**, the highlighted file row).
 - Split-pane details view with 5 tabs (matching the qBittorrent WebUI):
   - **General** -- transfer info, speeds, connections, dates, piece info
   - **Trackers** -- tracker URLs, status, seed/peer/leech counts
@@ -134,7 +151,7 @@ qbitty --dump-json
 | `Up/Down`   | Navigate torrent list; on **Content** tab with **`e`** edit on, move file row |
 | `Space`     | Toggle details pane                                                    |
 | `1-5`       | Switch details tab (opens pane if closed)                              |
-| `Left/Right`| Switch details tab                                                     |
+| `Left/Right`| Scroll long **names** (torrent list or **Content** tab file path) when they overflow; otherwise switch details tab (see below) |
 | `s`         | Stop/start selected torrent                                            |
 | `d`         | Delete selected torrent (with confirmation)                            |
 | `+` / `-`   | Increase/decrease queue priority                                       |
@@ -145,6 +162,8 @@ qbitty --dump-json
 | `m`         | Add torrent by magnet link                                             |
 | `r`         | When the connection/login banner is visible: retry now                 |
 | `q`         | Quit                                                                   |
+
+**Details tab navigation with `Left` / `Right`:** On the **Content** tab (**5**), **←** / **→** scroll the file name first when the path is longer than the column; at the ends of the scroll (or if the name fits), **←** moves to the previous tab and **→** scrolls the torrent name in the main list (there is no tab to the right of Content). On other tabs, **←** / **→** move between tabs as before.
 
 ## License
 
