@@ -214,7 +214,7 @@ func (v *View) setRune(x, y int, ch rune, fgColor, bgColor Attribute) error {
 		fgColor = v.FgColor
 		bgColor = v.BgColor
 		ch = v.Mask
-	} else if v.Highlight && ((!v.Wrap && y+v.oy == v.cy) || (v.Wrap && y == v.cy)) {
+	} else if v.Highlight && y == v.cy {
 		fgColor = v.SelFgColor | AttrBold
 		bgColor = v.SelBgColor | AttrBold
 	}

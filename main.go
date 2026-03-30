@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/awesome-gocui/gocui"
+	"github.com/mattn/go-runewidth"
 )
 
 const (
@@ -20,6 +21,8 @@ const (
 	greenColor  = "\033[32m"
 	yellowColor = "\033[33m"
 	blueColor   = "\033[34m"
+	greyMuted   = "\033[38;5;240m" // labels on status line
+	whiteBright = "\033[97m"       // values on status line
 
 	viewAPIError        = "apiError"
 	apiRetryIntervalSec = 10
@@ -27,8 +30,8 @@ const (
 
 var (
 	viewLeft         = "torrentList"
-	viewDetails      = "details"
-	viewShortcuts    = "shortcuts"
+	viewDetails   = "details"
+	viewShortcuts = "shortcuts" // status + shortcut hints (two-line panel)
 	viewOverlay      = "overlay"
 	torrents         []Torrent
 	filteredTorrents []Torrent
@@ -280,7 +283,9 @@ func main() {
 func layout(g *gocui.Gui) error {
 	maxX, maxY := g.Size()
 
-	listY1 := maxY - 3
+	// Bottom strip: exactly two inner rows (status + shortcuts); outer y0=maxY-3 … y1=maxY so last row is maxY-1.
+	// Torrent list ends at listY1=maxY-2 so inner content meets the strip (no extra blank rows under shortcuts).
+	listY1 := maxY - 2
 	if detailsVisible {
 		listY1 = maxY * 2 / 5
 	}
@@ -300,7 +305,12 @@ func layout(g *gocui.Gui) error {
 	}
 
 	if detailsVisible {
-		if v, err := g.SetView(viewDetails, 0, listY1+1, maxX-1, maxY-3, 0); err != nil {
+		// End above the status strip (shortcuts outer y0 = maxY-3).
+		detailsY1 := maxY - 4
+		if listY1+1 >= detailsY1 {
+			detailsY1 = listY1 + 3
+		}
+		if v, err := g.SetView(viewDetails, 0, listY1+1, maxX-1, detailsY1, 0); err != nil {
 			if !errors.Is(err, gocui.ErrUnknownView) {
 				return err
 			}
@@ -311,13 +321,13 @@ func layout(g *gocui.Gui) error {
 		g.DeleteView(viewDetails)
 	}
 
-	if v, err := g.SetView(viewShortcuts, -1, maxY-2, maxX, maxY, 0); err != nil {
-		if !errors.Is(err, gocui.ErrUnknownView) {
-			return err
-		}
-		v.Frame = false
-		drawShortcutsBar(v)
+	// Inner height 2: y1=maxY so last inner row maps to terminal maxY-1.
+	v, err := g.SetView(viewShortcuts, 0, maxY-3, maxX-1, maxY, 0)
+	if err != nil && !errors.Is(err, gocui.ErrUnknownView) {
+		return err
 	}
+	v.Frame = false
+	drawBottomPanel(v)
 
 	if err := layoutAPIErrorOverlay(g, maxX, maxY); err != nil {
 		return err
@@ -1063,8 +1073,7 @@ func refreshUI(g *gocui.Gui) error {
 	}
 	refreshTorrentList(g, v)
 	if sv, serr := g.View(viewShortcuts); serr == nil {
-		sv.Clear()
-		drawShortcutsBar(sv)
+		drawBottomPanel(sv)
 	}
 	mx, my := g.Size()
 	if err := layoutAPIErrorOverlay(g, mx, my); err != nil {
@@ -1722,8 +1731,49 @@ func closeOverlay(g *gocui.Gui) error {
 	return err
 }
 
-// drawShortcutsBar writes the keyboard shortcut hints into the given view.
-func drawShortcutsBar(v *gocui.View) {
+// drawBottomPanel draws the right-aligned status line and shortcut hints on the second inner row (input: v; output: two-line panel).
+func drawBottomPanel(v *gocui.View) {
+	v.Clear()
+	w, h := v.Size()
+	if h < 2 {
+		writeShortcutsBarContent(v)
+		return
+	}
+	torrentsMu.RLock()
+	list := torrents
+	torrentsMu.RUnlock()
+	var active, inactive int
+	var peerSum int64
+	var dlTotal, ulTotal int64
+	for _, t := range list {
+		if isTorrentInactiveState(t.State) {
+			inactive++
+		} else {
+			active++
+		}
+		peerSum += int64(t.Peers)
+		dlTotal += t.DownloadSpeed
+		ulTotal += t.UploadSpeed
+	}
+	plain := fmt.Sprintf(" Active %d  Inactive %d  Peers %d  Down %s  Up %s",
+		active, inactive, peerSum, formatSpeed(dlTotal), formatSpeed(ulTotal))
+	pad := w - runewidth.StringWidth(plain)
+	if pad < 0 {
+		pad = 0
+	}
+	fmt.Fprintf(v, "%s%sActive%s %s%d%s  %sInactive%s %s%d%s  %sPeers%s %s%d%s  %sDown%s %s%s%s  %sUp%s %s%s%s\n",
+		strings.Repeat(" ", pad),
+		greyMuted, resetColor, whiteBright, active, resetColor,
+		greyMuted, resetColor, whiteBright, inactive, resetColor,
+		greyMuted, resetColor, whiteBright, peerSum, resetColor,
+		greyMuted, resetColor, whiteBright, formatSpeed(dlTotal), resetColor,
+		greyMuted, resetColor, whiteBright, formatSpeed(ulTotal), resetColor,
+	)
+	writeShortcutsBarContent(v)
+}
+
+// writeShortcutsBarContent writes shortcut hint text without clearing the view (input: v).
+func writeShortcutsBarContent(v *gocui.View) {
 	apiErrMu.Lock()
 	hasAPIErr := apiErr != nil
 	apiErrMu.Unlock()
@@ -1747,3 +1797,14 @@ func drawShortcutsBar(v *gocui.View) {
 		yellowColor, resetColor,
 	)
 }
+
+// isTorrentInactiveState returns true for stopped, paused, error, or missing-files states (input: qBittorrent state string).
+func isTorrentInactiveState(state string) bool {
+	switch state {
+	case "stoppedDL", "stoppedUP", "stopped", "pausedDL", "pausedUP", "error", "missingFiles":
+		return true
+	default:
+		return false
+	}
+}
+
