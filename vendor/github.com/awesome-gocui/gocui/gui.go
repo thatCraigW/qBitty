@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+
+	"github.com/mattn/go-runewidth"
 )
 
 // OutputMode represents an output mode, which determines how colors
@@ -623,6 +625,11 @@ func (g *Gui) flush() error {
 					return err
 				}
 			}
+			if v.Footer != "" {
+				if err := g.drawListFooter(v, frameColor, bgColor); err != nil {
+					return err
+				}
+			}
 		}
 		if err := g.draw(v); err != nil {
 			return err
@@ -831,6 +838,31 @@ func (g *Gui) drawSubtitle(v *View, fgColor, bgColor Attribute) error {
 		if err := g.SetRune(x, v.y0, ch, fgColor, bgColor); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// drawListFooter draws Footer right-aligned on the bottom border row (y1), replacing horizontal rule cells between corners (inputs: view, frame fg/bg).
+func (g *Gui) drawListFooter(v *View, fgColor, bgColor Attribute) error {
+	msg := v.Footer
+	if msg == "" || v.y1 < 0 || v.y1 >= g.maxY {
+		return nil
+	}
+	innerLeft, innerRight := v.x0+1, v.x1-1
+	w := runewidth.StringWidth(msg)
+	start := innerRight - w + 1
+	if start < innerLeft {
+		return nil
+	}
+	x := start
+	for _, ch := range msg {
+		if x > innerRight {
+			break
+		}
+		if err := g.SetRune(x, v.y1, ch, fgColor, bgColor); err != nil {
+			return err
+		}
+		x += runewidth.RuneWidth(ch)
 	}
 	return nil
 }

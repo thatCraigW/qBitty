@@ -123,6 +123,10 @@ type View struct {
 	// If Frame is true, Subtitle allows to configure a subtitle for the view.
 	Subtitle string
 
+	// Footer is drawn right-aligned on the bottom frame row (y1), replacing box-drawing
+	// characters between the bottom corners (lazygit/jesseduffield gocui style).
+	Footer string
+
 	// If Mask is true, the View will display the mask instead of the real
 	// content
 	Mask rune

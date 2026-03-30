@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/awesome-gocui/gocui"
-	"github.com/mattn/go-runewidth"
 )
 
 const (
@@ -31,7 +30,7 @@ const (
 var (
 	viewLeft         = "torrentList"
 	viewDetails   = "details"
-	viewShortcuts = "shortcuts" // status + shortcut hints (two-line panel)
+	viewShortcuts = "shortcuts" // shortcut hints row below torrent panel (stats live on torrent Footer / bottom border)
 	viewOverlay      = "overlay"
 	torrents         []Torrent
 	filteredTorrents []Torrent
@@ -50,6 +49,9 @@ var (
 	contentFileCache        []TorrentFile
 	contentFileCacheHash    string
 )
+
+// roundedFrameRunes matches lazygit's gui.Border "rounded" (─ │ ╭ ╮ ╰ ╯); assign to View.FrameRunes for framed panels.
+var roundedFrameRunes = []rune{'─', '│', '╭', '╮', '╰', '╯'}
 
 // apiErrorState holds plain-English overlay text and retry countdown for connection issues.
 type apiErrorState struct {
@@ -283,8 +285,7 @@ func main() {
 func layout(g *gocui.Gui) error {
 	maxX, maxY := g.Size()
 
-	// Bottom strip: exactly two inner rows (status + shortcuts); outer y0=maxY-3 … y1=maxY so last row is maxY-1.
-	// Torrent list ends at listY1=maxY-2 so inner content meets the strip (no extra blank rows under shortcuts).
+	// Torrent bottom border on row maxY-2; shortcuts view shares y0=maxY-2 so hints land on maxY-1 (no blank row between).
 	listY1 := maxY - 2
 	if detailsVisible {
 		listY1 = maxY * 2 / 5
@@ -303,10 +304,14 @@ func layout(g *gocui.Gui) error {
 		scrollTorrentListSelectionIntoView(v)
 		_ = v.SetCursor(0, currentSelection+1)
 	}
+	if lv, lerr := g.View(viewLeft); lerr == nil {
+		lv.Footer = torrentFooterPlain()
+		lv.FrameRunes = roundedFrameRunes
+	}
 
 	if detailsVisible {
-		// End above the status strip (shortcuts outer y0 = maxY-3).
-		detailsY1 := maxY - 4
+		// End above the shortcuts strip (shortcuts occupy y0=maxY-2 … y1=maxY).
+		detailsY1 := maxY - 3
 		if listY1+1 >= detailsY1 {
 			detailsY1 = listY1 + 3
 		}
@@ -317,12 +322,15 @@ func layout(g *gocui.Gui) error {
 			v.Wrap = true
 			refreshDetailsPane(g)
 		}
+		if dv, derr := g.View(viewDetails); derr == nil {
+			dv.FrameRunes = roundedFrameRunes
+		}
 	} else {
 		g.DeleteView(viewDetails)
 	}
 
-	// Inner height 2: y1=maxY so last inner row maps to terminal maxY-1.
-	v, err := g.SetView(viewShortcuts, 0, maxY-3, maxX-1, maxY, 0)
+	// One inner row for key hints (y0=maxY-2 … y1=maxY).
+	v, err := g.SetView(viewShortcuts, 0, maxY-2, maxX-1, maxY, 0)
 	if err != nil && !errors.Is(err, gocui.ErrUnknownView) {
 		return err
 	}
@@ -392,6 +400,7 @@ func layoutAPIErrorOverlay(g *gocui.Gui, maxX, maxY int) error {
 	if err != nil && !errors.Is(err, gocui.ErrUnknownView) {
 		return err
 	}
+	v.FrameRunes = roundedFrameRunes
 	v.Wrap = true
 	v.Title = st.Title
 	v.Clear()
@@ -1072,6 +1081,7 @@ func refreshUI(g *gocui.Gui) error {
 		return err
 	}
 	refreshTorrentList(g, v)
+	v.Footer = torrentFooterPlain()
 	if sv, serr := g.View(viewShortcuts); serr == nil {
 		drawBottomPanel(sv)
 	}
@@ -1169,6 +1179,7 @@ func showConfirmDialog(g *gocui.Gui, message string, onConfirm func() error) err
 	if err != nil && !errors.Is(err, gocui.ErrUnknownView) {
 		return err
 	}
+	v.FrameRunes = roundedFrameRunes
 	v.Title = "Confirm"
 	v.Clear()
 	fmt.Fprintf(v, " %s", message)
@@ -1204,6 +1215,7 @@ func showInputDialog(g *gocui.Gui, title string, onSubmit func(string) error) er
 	if err != nil && !errors.Is(err, gocui.ErrUnknownView) {
 		return err
 	}
+	v.FrameRunes = roundedFrameRunes
 	v.Title = title
 	v.Editable = true
 	v.Clear()
@@ -1626,6 +1638,7 @@ func showFilterDialog(g *gocui.Gui) error {
 	if err != nil && !errors.Is(err, gocui.ErrUnknownView) {
 		return err
 	}
+	v.FrameRunes = roundedFrameRunes
 	v.Title = "Filter"
 
 	grey := "\033[38;5;245m"
@@ -1731,14 +1744,8 @@ func closeOverlay(g *gocui.Gui) error {
 	return err
 }
 
-// drawBottomPanel draws the right-aligned status line and shortcut hints on the second inner row (input: v; output: two-line panel).
-func drawBottomPanel(v *gocui.View) {
-	v.Clear()
-	w, h := v.Size()
-	if h < 2 {
-		writeShortcutsBarContent(v)
-		return
-	}
+// torrentFooterPlain returns plain text for the torrent panel bottom border (right-aligned by gocui drawListFooter; output: single line, no ANSI).
+func torrentFooterPlain() string {
 	torrentsMu.RLock()
 	list := torrents
 	torrentsMu.RUnlock()
@@ -1755,20 +1762,13 @@ func drawBottomPanel(v *gocui.View) {
 		dlTotal += t.DownloadSpeed
 		ulTotal += t.UploadSpeed
 	}
-	plain := fmt.Sprintf(" Active %d  Inactive %d  Peers %d  Down %s  Up %s",
+	return fmt.Sprintf(" Active %d  Inactive %d  Peers %d  Down %s  Up %s",
 		active, inactive, peerSum, formatSpeed(dlTotal), formatSpeed(ulTotal))
-	pad := w - runewidth.StringWidth(plain)
-	if pad < 0 {
-		pad = 0
-	}
-	fmt.Fprintf(v, "%s%sActive%s %s%d%s  %sInactive%s %s%d%s  %sPeers%s %s%d%s  %sDown%s %s%s%s  %sUp%s %s%s%s\n",
-		strings.Repeat(" ", pad),
-		greyMuted, resetColor, whiteBright, active, resetColor,
-		greyMuted, resetColor, whiteBright, inactive, resetColor,
-		greyMuted, resetColor, whiteBright, peerSum, resetColor,
-		greyMuted, resetColor, whiteBright, formatSpeed(dlTotal), resetColor,
-		greyMuted, resetColor, whiteBright, formatSpeed(ulTotal), resetColor,
-	)
+}
+
+// drawBottomPanel writes shortcut hints into the shortcuts view (input: v; output: one-line hints).
+func drawBottomPanel(v *gocui.View) {
+	v.Clear()
 	writeShortcutsBarContent(v)
 }
 
