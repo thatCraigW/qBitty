@@ -1,3 +1,62 @@
+# qBitty v0.4.0
+
+Release notes for **v0.4.0** (from v0.3.0).
+
+---
+
+## Highlights
+
+- **Vertical scrolling** — Moving the selection with **↑** / **↓** keeps the **torrent list** and **Content** tab file list scrolled so the **active row stays in view** (also after opening the details pane or resizing the terminal).
+- **Aggregate status** — **Active**, **inactive**, **peers**, and total **download** / **upload** speeds are shown **on the torrent panel’s bottom border**, right-aligned (lazygit-style embedded footer). Labels use **dark grey**; numeric values and speeds use **white**.
+- **Rounded panel borders** — Framed views (torrent list, details, overlays) use **rounded** corners (**╭ ╮ ╰ ╯**), matching the common lazygit **`gui.border: rounded`** look.
+- **Shortcut colors** — The bottom **shortcut** row uses **blue** for descriptions and **yellow** for key hints; the **Content** tab’s footer line uses the **same** scheme for **`e`**, **`←→`**, and edit-mode keys.
+- **Layout and gocui** — Tighter spacing between the torrent frame and the shortcut row (no stray blank line); vendored **gocui** updates include **footer** / **multi-span** drawing, **list footer** on the bottom frame row, and a **highlight** fix when horizontally scrolling long names.
+
+---
+
+## Vertical scrolling
+
+- **Torrent list** — When the selection moves off-screen, the list **scrolls** so the selected torrent stays visible.
+- **Content tab** — When **file rows** extend past the visible area, selection changes **scroll** the list accordingly (including in **`e`** edit mode).
+
+---
+
+## Status line (torrent footer)
+
+- Totals are **embedded in the bottom border** of the **Torrents** panel (not a separate strip that overwrites the frame).
+- **Two-tone text:** grey labels (**Active**, **Inactive**, **Peers**, **Down**, **Up**) and white values, via **footer spans** in the UI layer.
+
+---
+
+## Visual polish
+
+- **Rounded `FrameRunes`** on framed views for a softer outline.
+- **Shortcut row:** `FgColor` blue + ANSI **yellow** keys for the global hint bar; **Content** tab hints updated to match.
+- **Geometry:** Torrent bottom edge and shortcut view aligned so there is **no empty row** between the border and the bottom hint line.
+
+---
+
+## Upgrading
+
+- **From source:** Check out tag `v0.4.0` and rebuild as usual.
+- **Homebrew:** After your tap points at `v0.4.0`, run:
+
+  ```bash
+  brew update && brew upgrade qbitty
+  ```
+
+  (Use the actual formula name if yours differs.)
+
+---
+
+## Full diff
+
+Compare to v0.3.0 on GitHub:
+
+<https://github.com/thatCraigW/qBitty/compare/v0.3.0...v0.4.0>
+
+---
+
 # qBitty v0.3.0
 
 Release notes for **v0.3.0** (from v0.2.0).
