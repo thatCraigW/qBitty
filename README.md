@@ -34,15 +34,13 @@ Terminal captures from **2026-03-30** (bundled under [`docs/screenshots/`](docs/
 - Auto-refreshes every second
 - **When qBittorrent is unreachable or login fails**, the app stays open with a short explanation, an empty list, **`r`** to retry manually, and (for connection issues) a **10s countdown** before automatic retry
 
-### What’s new in v0.5.0
+### What’s new in v0.6.0
 
-- **Details title** — The details pane shows **Details** in its **top border**, like **Torrents** on the main pane.
-- **Content tab footer on the frame** — On the **Content** tab, **Total: N files** is **right-aligned** on the **details panel’s bottom border** (with the torrent stats); **shortcut hints** (**`e`**, **`←→`**, edit-mode keys) sit **left-aligned** on the **same** border—no separate strip stealing rows from the file list.
-- **Scrollbars (lazygit-style)** — When the torrent list or details content **scrolls vertically**, a **thumb** is drawn on the **right frame edge** (replacing that border segment)—**no extra column**; details track **per-tab** content height.
-- **Layout** — The details pane **shares its bottom row** with the global shortcut strip (no blank line above the hints when the details pane is open); list **footer** text is **inset** to match the title row.
-- **Shortcut hints** — The bottom bar uses compact **`←/→ name`** and **`+/- priority`** labels (yellow keys, blue slash and descriptions).
+- **Sonarr / Radarr blocklist (`b`)** — With optional **`sonarr_*` / `radarr_*`** in config (or **`SONARR_*` / `RADARR_*`** env vars), **`b`** blocklists the release in the matching app when the torrent **category** is **`Sonarr`** or **`Radarr`** and the job is still in that app’s **queue** (same behavior as removing from queue with blocklist in the *arr UI). If *arr is not configured or the category does not match, **`b`** offers **remove from qBittorrent only**, with copy explaining that the client cannot block future grabs.
+- **Config file loading** — Reads **`~/.config/qbitty/config.json`** even when **`XDG_CONFIG_HOME`** points elsewhere; strips a **UTF-8 BOM**; **invalid JSON** fails at startup with a clear error instead of failing silently (so env vars no longer mask a broken file).
+- **Documentation** — README includes **minimal** and **full** `config.json` examples (qBittorrent + optional *arr), env table, and **`b`** in the shortcut list.
 
-Earlier releases: **v0.4.0** added vertical scrolling, torrent footer stats, rounded corners, and Content footer styling; **v0.3.0** added horizontal name scrolling and README screenshots. See **`RELEASE_NOTES.md`** for full notes.
+Earlier releases: **v0.5.0** added details title, Content footer on the frame, scrollbars, and shortcut bar tweaks; **v0.4.0** added vertical scrolling and torrent footer stats. See **`RELEASE_NOTES.md`** for full notes.
 
 ## Requirements
 
@@ -83,7 +81,9 @@ qBitty loads credentials from a **config file** first, then applies any **enviro
 
 ### Config file (recommended)
 
-Create `~/.config/qbitty/config.json`:
+Create `~/.config/qbitty/config.json`. Below are copy-paste-friendly examples (2-space indentation).
+
+**qBittorrent only** (required keys):
 
 ```json
 {
@@ -92,6 +92,24 @@ Create `~/.config/qbitty/config.json`:
   "password": "your-password"
 }
 ```
+
+**With optional Sonarr / Radarr** (for **`b`** blocklist when qBittorrent categories are `Sonarr` or `Radarr`; omit any block you do not use):
+
+```json
+{
+  "url": "https://localhost:8080",
+  "username": "admin",
+  "password": "your-password",
+
+  "sonarr_url": "http://127.0.0.1:8989",
+  "sonarr_api_key": "your-sonarr-api-key",
+
+  "radarr_url": "http://127.0.0.1:7878",
+  "radarr_api_key": "your-radarr-api-key"
+}
+```
+
+If `sonarr_*` / `radarr_*` are omitted, **`b`** still offers to remove the torrent from qBittorrent only.
 
 Restrict permissions so only your user can read it:
 
@@ -103,16 +121,22 @@ chmod 600 ~/.config/qbitty/config.json
 
 You can use environment variables instead of a config file, or to override individual values from the config file:
 
-| Variable  | Description                          | Example                    |
-|-----------|--------------------------------------|----------------------------|
-| `QB_URL`  | qBittorrent WebUI URL                | `https://localhost:8080`   |
-| `QB_USER` | WebUI username                       | `admin`                    |
-| `QB_PASS` | WebUI password                       | `adminadmin`               |
+| Variable           | Description                                      | Example                    |
+|--------------------|--------------------------------------------------|----------------------------|
+| `QB_URL`           | qBittorrent WebUI URL                            | `https://localhost:8080`   |
+| `QB_USER`          | WebUI username                                   | `admin`                    |
+| `QB_PASS`          | WebUI password                                   | `adminadmin`               |
+| `SONARR_URL`       | Sonarr base URL (optional; blocklist via **`b`**) | `http://localhost:8989`    |
+| `SONARR_API_KEY`   | Sonarr API key (**Settings → Security**)         |                            |
+| `RADARR_URL`       | Radarr base URL (optional; blocklist via **`b`**) | `http://localhost:7878`    |
+| `RADARR_API_KEY`   | Radarr API key (**Settings → Security**)       |                            |
 
 ### Resolution order
 
-1. Read `~/.config/qbitty/config.json` (if it exists)
-2. Override with `QB_URL` / `QB_USER` / `QB_PASS` environment variables (if set)
+1. Read the first config file that exists, in this order: `$XDG_CONFIG_HOME/qbitty/config.json` (when `XDG_CONFIG_HOME` is set), then `~/.config/qbitty/config.json`. (If `XDG_CONFIG_HOME` points somewhere other than `~/.config`, your file under `~/.config` is still tried second.)
+2. Override with environment variables (if set): `QB_*`, and optionally `SONARR_*` / `RADARR_*`.
+
+Invalid JSON in the config file is reported at startup (it is not ignored). Required qBittorrent keys are `url`, `username`, `password` in JSON (not `QB_URL`-style names). Optional keys are `sonarr_url`, `sonarr_api_key`, `radarr_url`, `radarr_api_key`.
 
 This is useful if you want to keep your URL and username in the config file but pass the password via an env var for extra safety.
 
@@ -156,6 +180,7 @@ qbitty --dump-json
 | `Left/Right`| Scroll long **names** (torrent list or **Content** tab file path) when they overflow; otherwise switch details tab (see below) |
 | `s`         | Stop/start selected torrent                                            |
 | `d`         | Delete selected torrent (with confirmation)                            |
+| `b`         | Blocklist in Sonarr/Radarr (if configured) or remove from qBittorrent only (see config) |
 | `+` / `-`   | Increase/decrease queue priority                                       |
 | `e`         | On **Content** tab: toggle file-priority edit (`e` again to exit)      |
 | `p`         | In file edit mode: cycle priority (Skip → Normal → High → Maximum)   |

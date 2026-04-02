@@ -1,3 +1,38 @@
+# qBitty v0.6.0
+
+Release notes for **v0.6.0** (from v0.5.0).
+
+---
+
+## Highlights
+
+- **Sonarr / Radarr integration (`b`)** — Optional **`sonarr_url`**, **`sonarr_api_key`**, **`radarr_url`**, **`radarr_api_key`** in **`config.json`** (or **`SONARR_URL`**, **`SONARR_API_KEY`**, **`RADARR_URL`**, **`RADARR_API_KEY`** in the environment). When the selected torrent’s qBittorrent **category** is **`Sonarr`** or **`Radarr`** and the matching API is configured, **`b`** confirms, then finds the download in that app’s **`/api/v3/queue`** and **`DELETE`s** it with **`removeFromClient=true`** and **`blocklist=true`**. If *arr is not configured for that category, or the category is something else, **`b`** offers **removal from qBittorrent only**, with text that the client does not maintain a release blocklist like *arr.
+- **Config loading** — Tries **`$XDG_CONFIG_HOME/qbitty/config.json`** first (when set), then **`~/.config/qbitty/config.json`**, so a config under **`~/.config`** is still read if **`XDG_CONFIG_HOME`** is not `~/.config`. **UTF-8 BOM** is stripped. **Malformed JSON** returns an error at startup instead of being ignored.
+- **README** — Copy-paste **JSON** examples (qBittorrent-only and with *arr), env reference, and **`b`** documented in shortcuts.
+
+---
+
+## Upgrading
+
+- **From source:** Check out tag `v0.6.0` and rebuild as usual.
+- **Homebrew:** After your tap points at `v0.6.0`, run:
+
+  ```bash
+  brew update && brew upgrade qbitty
+  ```
+
+  (Use the actual formula name if yours differs.)
+
+---
+
+## Full diff
+
+Compare to v0.5.0 on GitHub:
+
+<https://github.com/thatCraigW/qBitty/compare/v0.5.0...v0.6.0>
+
+---
+
 # qBitty v0.5.0
 
 Release notes for **v0.5.0** (from v0.4.0).

@@ -48,6 +48,9 @@ var (
 	contentNameScrollOffset int // horizontal scroll for selected file name on Content tab (rune index)
 	contentFileCache        []TorrentFile
 	contentFileCacheHash    string
+
+	arrSonarrClient *ArrHTTPClient // non-nil when config provides Sonarr URL + API key
+	arrRadarrClient *ArrHTTPClient // non-nil when config provides Radarr URL + API key
 )
 
 // roundedFrameRunes matches lazygit's gui.Border "rounded" (─ │ ╭ ╮ ╰ ╯); assign to View.FrameRunes for framed panels.
@@ -114,6 +117,24 @@ func clearAPIError() {
 	apiErrMu.Unlock()
 }
 
+// applyArrClientsFromConfig sets optional Sonarr/Radarr HTTP clients from cfg (inputs: loaded config).
+func applyArrClientsFromConfig(cfg *Config) {
+	if cfg == nil {
+		arrSonarrClient, arrRadarrClient = nil, nil
+		return
+	}
+	if strings.TrimSpace(cfg.SonarrURL) != "" && strings.TrimSpace(cfg.SonarrAPIKey) != "" {
+		arrSonarrClient = NewArrHTTPClient(cfg.SonarrURL, cfg.SonarrAPIKey)
+	} else {
+		arrSonarrClient = nil
+	}
+	if strings.TrimSpace(cfg.RadarrURL) != "" && strings.TrimSpace(cfg.RadarrAPIKey) != "" {
+		arrRadarrClient = NewArrHTTPClient(cfg.RadarrURL, cfg.RadarrAPIKey)
+	} else {
+		arrRadarrClient = nil
+	}
+}
+
 // tryRecoverAPISync reloads config, logs in, and fetches torrents — updates or clears apiErr on failure/success.
 func tryRecoverAPISync() {
 	cfg, err := LoadConfig()
@@ -121,6 +142,7 @@ func tryRecoverAPISync() {
 		setAPIError(err)
 		return
 	}
+	applyArrClientsFromConfig(cfg)
 	if err := apiClient.Login(cfg.Username, cfg.Password); err != nil {
 		setAPIError(err)
 		return
@@ -160,6 +182,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	applyArrClientsFromConfig(cfg)
 
 	apiClient, err = NewQBClientFromConfig(cfg)
 	if err != nil {
@@ -879,6 +902,11 @@ func keybindings(g *gocui.Gui, client *QBClient) error {
 	}); err != nil {
 		return err
 	}
+	if err := g.SetKeybinding(viewLeft, 'b', gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
+		return confirmBlocklistTorrent(g, client)
+	}); err != nil {
+		return err
+	}
 	if err := g.SetKeybinding(viewLeft, '+', gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
 		return changePriority(g, client, true)
 	}); err != nil {
@@ -1271,31 +1299,186 @@ func confirmDeleteTorrent(g *gocui.Gui, client *QBClient) error {
 	})
 }
 
-// showConfirmDialog displays a y/n confirmation overlay; calls onConfirm if user presses y.
-func showConfirmDialog(g *gocui.Gui, message string, onConfirm func() error) error {
+// truncateForDialog shortens text for modal width (input: string and max runes; output: possibly truncated string).
+func truncateForDialog(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	if max <= 3 {
+		return string(r[:max])
+	}
+	return string(r[:max-3]) + "..."
+}
+
+// showInfoDialog shows a one-shot message overlay; dismiss with Enter or Esc (inputs: title and body text).
+func showInfoDialog(g *gocui.Gui, title, body string) error {
 	maxX, maxY := g.Size()
-	width := len(message) + 4
-	if width < 30 {
-		width = 30
+	lines := strings.Split(body, "\n")
+	width := 20
+	for _, line := range lines {
+		w := len(line) + 4
+		if w > width {
+			width = w
+		}
 	}
 	if width > maxX-4 {
 		width = maxX - 4
 	}
+	height := len(lines) + 2
+	if height > maxY-4 {
+		height = maxY - 4
+	}
+	if height < 3 {
+		height = 3
+	}
 	x0 := maxX/2 - width/2
-	y0 := maxY/2 - 1
+	y0 := maxY/2 - height/2
+	v, err := g.SetView(viewOverlay, x0, y0, x0+width, y0+height, 0)
+	if err != nil && !errors.Is(err, gocui.ErrUnknownView) {
+		return err
+	}
+	v.FrameRunes = roundedFrameRunes
+	v.Title = title
+	v.Clear()
+	for _, line := range lines {
+		if len(line) > width-2 {
+			line = truncateForDialog(line, width-4)
+		}
+		fmt.Fprintf(v, " %s\n", line)
+	}
+	g.SetKeybinding(viewOverlay, gocui.KeyEnter, gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
+		return closeOverlay(g)
+	})
+	g.SetKeybinding(viewOverlay, gocui.KeyEsc, gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
+		return closeOverlay(g)
+	})
+	_, err = g.SetCurrentView(viewOverlay)
+	return err
+}
 
-	v, err := g.SetView(viewOverlay, x0, y0, x0+width, y0+2, 0)
+// refreshTorrentsFromAPI reloads the torrent list from qBittorrent and refreshes the UI (inputs: g and API client; output: error from API or refresh).
+func refreshTorrentsFromAPI(g *gocui.Gui, client *QBClient) error {
+	newT, err := client.GetTorrents()
+	if err != nil {
+		return err
+	}
+	torrentsMu.Lock()
+	torrents = newT
+	applyFilters()
+	torrentsMu.Unlock()
+	refreshDetailsPane(g)
+	return refreshUI(g)
+}
+
+// confirmQBRemoveOnly asks to delete the torrent in qBittorrent only; explains that qB has no release blocklist (inputs: g, client, hash, extra context line).
+func confirmQBRemoveOnly(g *gocui.Gui, client *QBClient, hash string, contextLine string) error {
+	msg := "Remove torrent from qBittorrent only? (y/n)\n" +
+		"qBittorrent cannot block future grabs; only Sonarr/Radarr blocklists do that.\n" +
+		contextLine
+	return showConfirmDialog(g, msg, func() error {
+		if err := client.DeleteTorrent(hash, false); err != nil {
+			return err
+		}
+		return refreshTorrentsFromAPI(g, client)
+	})
+}
+
+// confirmBlocklistTorrent blocklists via *arr when configured for the category; otherwise offers qBittorrent-only removal (inputs: g, qB client).
+func confirmBlocklistTorrent(g *gocui.Gui, client *QBClient) error {
+	t := getSelectedTorrent()
+	if t == nil {
+		return nil
+	}
+	hash := t.Hash
+	name := t.Name
+
+	switch t.Category {
+	case arrCategorySonarr:
+		if arrSonarrClient != nil {
+			msg := "Sonarr: blocklist this release and remove from client? (y/n)"
+			return showConfirmDialog(g, msg, func() error {
+				if err := blocklistTorrentViaArr(arrSonarrClient, hash, name); err != nil {
+					return err
+				}
+				return refreshTorrentsFromAPI(g, client)
+			})
+		}
+		return confirmQBRemoveOnly(g, client, hash,
+			"Sonarr API not configured — set SONARR_URL and SONARR_API_KEY for *arr blocklist.")
+	case arrCategoryRadarr:
+		if arrRadarrClient != nil {
+			msg := "Radarr: blocklist this release and remove from client? (y/n)"
+			return showConfirmDialog(g, msg, func() error {
+				if err := blocklistTorrentViaArr(arrRadarrClient, hash, name); err != nil {
+					return err
+				}
+				return refreshTorrentsFromAPI(g, client)
+			})
+		}
+		return confirmQBRemoveOnly(g, client, hash,
+			"Radarr API not configured — set RADARR_URL and RADARR_API_KEY for *arr blocklist.")
+	default:
+		return confirmQBRemoveOnly(g, client, hash,
+			"Category is not Sonarr/Radarr — configure *arr + matching category to blocklist there.")
+	}
+}
+
+// showConfirmDialog displays a y/n confirmation overlay; message may contain newlines; calls onConfirm if user presses y.
+func showConfirmDialog(g *gocui.Gui, message string, onConfirm func() error) error {
+	maxX, maxY := g.Size()
+	lines := strings.Split(message, "\n")
+	width := 30
+	for _, line := range lines {
+		w := len(line) + 4
+		if w > width {
+			width = w
+		}
+	}
+	if width > maxX-4 {
+		width = maxX - 4
+	}
+	if width < 30 {
+		width = 30
+	}
+	viewH := len(lines) + 2
+	if viewH < 3 {
+		viewH = 3
+	}
+	if viewH > maxY-4 {
+		viewH = maxY - 4
+	}
+	x0 := maxX/2 - width/2
+	y0 := (maxY-viewH)/2
+	if y0 < 0 {
+		y0 = 0
+	}
+
+	v, err := g.SetView(viewOverlay, x0, y0, x0+width, y0+viewH, 0)
 	if err != nil && !errors.Is(err, gocui.ErrUnknownView) {
 		return err
 	}
 	v.FrameRunes = roundedFrameRunes
 	v.Title = "Confirm"
 	v.Clear()
-	fmt.Fprintf(v, " %s", message)
+	for _, line := range lines {
+		show := line
+		if len(show) > width-2 {
+			show = truncateForDialog(show, width-4)
+		}
+		fmt.Fprintf(v, " %s\n", show)
+	}
 
 	g.SetKeybinding(viewOverlay, 'y', gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
 		if err := onConfirm(); err != nil {
 			log.Printf("action error: %v", err)
+			if err2 := closeOverlay(g); err2 != nil {
+				return err2
+			}
+			return showInfoDialog(g, "Error", truncateForDialog(err.Error(), 400))
 		}
 		return closeOverlay(g)
 	})
@@ -1944,8 +2127,9 @@ func writeShortcutsBarContent(v *gocui.View) {
 		return
 	}
 	// Keys in yellow (lazygit-style); descriptions use view FgColor (blue).
-	fmt.Fprintf(v, " %s←%s%s/%s→%s name  %s⎵%s details  %ss%s stop/start  %sd%s delete  %s+%s%s/%s-%s priority  %sf%s filter  %sa%s add url  %sm%s magnet  %sq%s quit",
+	fmt.Fprintf(v, " %s←%s%s/%s→%s name  %s⎵%s details  %ss%s stop/start  %sd%s delete  %sb%s blocklist  %s+%s%s/%s-%s priority  %sf%s filter  %sa%s add url  %sm%s magnet  %sq%s quit",
 		yellowColor, resetColor, blueColor, yellowColor, resetColor,
+		yellowColor, resetColor,
 		yellowColor, resetColor,
 		yellowColor, resetColor,
 		yellowColor, resetColor,
