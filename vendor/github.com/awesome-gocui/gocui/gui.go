@@ -625,7 +625,7 @@ func (g *Gui) flush() error {
 					return err
 				}
 			}
-			if v.Footer != "" || len(v.FooterSpans) > 0 {
+			if v.Footer != "" || len(v.FooterSpans) > 0 || len(v.FooterSpansLeft) > 0 {
 				if err := g.drawListFooter(v, frameColor, bgColor); err != nil {
 					return err
 				}
@@ -842,26 +842,50 @@ func (g *Gui) drawSubtitle(v *View, fgColor, bgColor Attribute) error {
 	return nil
 }
 
-// drawListFooter draws Footer or FooterSpans right-aligned on the bottom border row (y1) (inputs: view, frame fg/bg for plain Footer only).
+// drawListFooter draws FooterSpansLeft (left), FooterSpans (right), or plain Footer on the bottom border row (y1) (inputs: view, frame fg/bg for plain Footer only).
 func (g *Gui) drawListFooter(v *View, fgColor, bgColor Attribute) error {
 	if v.y1 < 0 || v.y1 >= g.maxY {
 		return nil
 	}
 	innerLeft, innerRight := v.x0+1, v.x1-1
+	// Inset by one cell on each side to match drawTitle (title starts at x0+2; last title column ≤ x1-2).
+	footerLeft, footerRight := innerLeft+1, innerRight-1
+	if footerLeft > footerRight {
+		return nil
+	}
+
+	if len(v.FooterSpansLeft) > 0 {
+		x := footerLeft
+		for _, sp := range v.FooterSpansLeft {
+			fg := sp.Fg
+			if fg == ColorDefault {
+				fg = fgColor
+			}
+			for _, ch := range sp.Text {
+				if x > footerRight {
+					return nil
+				}
+				if err := g.SetRune(x, v.y1, ch, fg, bgColor); err != nil {
+					return err
+				}
+				x += runewidth.RuneWidth(ch)
+			}
+		}
+	}
 
 	if len(v.FooterSpans) > 0 {
 		var w int
 		for _, sp := range v.FooterSpans {
 			w += runewidth.StringWidth(sp.Text)
 		}
-		start := innerRight - w + 1
-		if start < innerLeft {
+		start := footerRight - w + 1
+		if start < footerLeft {
 			return nil
 		}
 		x := start
 		for _, sp := range v.FooterSpans {
 			for _, ch := range sp.Text {
-				if x > innerRight {
+				if x > footerRight {
 					return nil
 				}
 				fg := sp.Fg
@@ -882,13 +906,13 @@ func (g *Gui) drawListFooter(v *View, fgColor, bgColor Attribute) error {
 		return nil
 	}
 	w := runewidth.StringWidth(msg)
-	start := innerRight - w + 1
-	if start < innerLeft {
+	start := footerRight - w + 1
+	if start < footerLeft {
 		return nil
 	}
 	x := start
 	for _, ch := range msg {
-		if x > innerRight {
+		if x > footerRight {
 			break
 		}
 		if err := g.SetRune(x, v.y1, ch, fgColor, bgColor); err != nil {

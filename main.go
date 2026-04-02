@@ -28,7 +28,7 @@ const (
 )
 
 var (
-	viewLeft         = "torrentList"
+	viewLeft                   = "torrentList"
 	viewDetails   = "details"
 	viewShortcuts = "shortcuts" // shortcut hints row below torrent panel (stats live on torrent Footer / bottom border)
 	viewOverlay      = "overlay"
@@ -285,7 +285,7 @@ func main() {
 func layout(g *gocui.Gui) error {
 	maxX, maxY := g.Size()
 
-	// Torrent bottom border on row maxY-2; shortcuts view shares y0=maxY-2 so hints land on maxY-1 (no blank row between).
+	// Torrent bottom border on row maxY-2; shortcuts view shares y0=maxY-2 so hints land on maxY-1.
 	listY1 := maxY - 2
 	if detailsVisible {
 		listY1 = maxY * 2 / 5
@@ -311,26 +311,28 @@ func layout(g *gocui.Gui) error {
 	}
 
 	if detailsVisible {
-		// End above the shortcuts strip (shortcuts occupy y0=maxY-2 … y1=maxY).
-		detailsY1 := maxY - 3
+		// Share bottom row y=maxY-2 with the shortcuts view (same as torrents when details are hidden) so there is no blank line above the hint bar.
+		detailsY1 := maxY - 2
 		if listY1+1 >= detailsY1 {
 			detailsY1 = listY1 + 3
 		}
-		if v, err := g.SetView(viewDetails, 0, listY1+1, maxX-1, detailsY1, 0); err != nil {
+		detailsMainY1 := detailsY1
+		if v, err := g.SetView(viewDetails, 0, listY1+1, maxX-1, detailsMainY1, 0); err != nil {
 			if !errors.Is(err, gocui.ErrUnknownView) {
 				return err
 			}
+			v.Title = "Details"
 			v.Wrap = true
 			refreshDetailsPane(g)
 		}
 		if dv, derr := g.View(viewDetails); derr == nil {
+			dv.Title = "Details"
 			dv.FrameRunes = roundedFrameRunes
 		}
 	} else {
 		g.DeleteView(viewDetails)
 	}
 
-	// One inner row for key hints (y0=maxY-2 … y1=maxY); lazygit default gui.theme.optionsTextColor is blue.
 	v, err := g.SetView(viewShortcuts, 0, maxY-2, maxX-1, maxY, 0)
 	if err != nil && !errors.Is(err, gocui.ErrUnknownView) {
 		return err
@@ -1255,9 +1257,58 @@ func refreshDetailsPane(g *gocui.Gui) {
 		v.Clear()
 		v.SetOrigin(0, 0)
 		fmt.Fprintln(v, " No torrent selected")
+		v.Footer = ""
+		v.FooterSpans = nil
+		v.FooterSpansLeft = nil
 		return
 	}
 	renderDetailsTab(v, apiClient, t.Hash, detailsTab)
+	applyDetailsPaneFooter(v)
+}
+
+// contentTabFooterLeftSpans returns left-aligned shortcut segments for the Content tab bottom border (input: none; output: spans, uses contentEditMode).
+func contentTabFooterLeftSpans() []gocui.FooterSpan {
+	y, b := gocui.ColorYellow, gocui.ColorBlue
+	if contentEditMode {
+		return []gocui.FooterSpan{
+			{Text: "↑↓", Fg: y},
+			{Text: " move  ", Fg: b},
+			{Text: "p", Fg: y},
+			{Text: " priority  ", Fg: b},
+			{Text: "e", Fg: y},
+			{Text: " exit  ", Fg: b},
+			{Text: "←→", Fg: y},
+			{Text: " name", Fg: b},
+		}
+	}
+	return []gocui.FooterSpan{
+		{Text: "e", Fg: y},
+		{Text: " edit  ", Fg: b},
+		{Text: "←→", Fg: y},
+		{Text: " scroll name", Fg: b},
+	}
+}
+
+// applyDetailsPaneFooter sets the details frame bottom-border footers for the Content tab (left shortcuts, right file total); clears on other tabs (input: v = details view).
+func applyDetailsPaneFooter(v *gocui.View) {
+	v.Footer = ""
+	v.FooterSpans = nil
+	v.FooterSpansLeft = nil
+	if detailsTab != 5 {
+		return
+	}
+	t := getSelectedTorrent()
+	if t == nil || contentFileCacheHash != t.Hash || len(contentFileCache) == 0 {
+		return
+	}
+	grey := gocui.Get256Color(240)
+	white := gocui.ColorWhite
+	v.FooterSpans = []gocui.FooterSpan{
+		{Text: " Total: ", Fg: grey},
+		{Text: fmt.Sprintf("%d", len(contentFileCache)), Fg: white},
+		{Text: " files", Fg: grey},
+	}
+	v.FooterSpansLeft = contentTabFooterLeftSpans()
 }
 
 // renderDetailsTab clears the overlay and draws the tab header + content for the given tab number.
@@ -1489,23 +1540,6 @@ func renderContentTab(v *gocui.View, client *QBClient, hash string) {
 			f.Progress*100,
 			prioW, filePriorityStr(f.Priority),
 			suffix)
-	}
-	fmt.Fprintf(v, "\n %sTotal: %d files%s\n", grey, len(files), resetColor)
-	// Same scheme as main shortcuts bar: yellow keys, blue descriptions (explicit blue; view holds mixed tab content).
-	if contentEditMode {
-		fmt.Fprintf(v, " %s↑↓%s%s move  %sp%s%s priority  %se%s%s exit  %s←→%s%s name%s",
-			yellowColor, resetColor, blueColor,
-			yellowColor, resetColor, blueColor,
-			yellowColor, resetColor, blueColor,
-			yellowColor, resetColor, blueColor,
-			resetColor,
-		)
-	} else {
-		fmt.Fprintf(v, " %se%s%s edit  %s←→%s%s scroll name%s",
-			yellowColor, resetColor, blueColor,
-			yellowColor, resetColor, blueColor,
-			resetColor,
-		)
 	}
 	if !contentEditMode {
 		_ = v.SetOrigin(0, 0)

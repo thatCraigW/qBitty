@@ -136,6 +136,9 @@ type View struct {
 	// FooterSpans draws the footer as colored segments (right-aligned); when non-empty, Footer is ignored.
 	FooterSpans []FooterSpan
 
+	// FooterSpansLeft draws optional colored segments left-aligned on the bottom frame row (y1), before FooterSpans.
+	FooterSpansLeft []FooterSpan
+
 	// If Mask is true, the View will display the mask instead of the real
 	// content
 	Mask rune
