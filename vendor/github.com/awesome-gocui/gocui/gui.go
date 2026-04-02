@@ -110,6 +110,9 @@ type Gui struct {
 	// SupportOverlaps is true when we allow for view edges to overlap with other
 	// view edges
 	SupportOverlaps bool
+
+	// AfterDraw runs after all views are drawn, before the screen is shown (e.g. scrollbar overlays on frame edges).
+	AfterDraw func(*Gui) error
 }
 
 // NewGui returns a new Gui object with a given output mode.
@@ -632,6 +635,11 @@ func (g *Gui) flush() error {
 			}
 		}
 		if err := g.draw(v); err != nil {
+			return err
+		}
+	}
+	if g.AfterDraw != nil {
+		if err := g.AfterDraw(g); err != nil {
 			return err
 		}
 	}
