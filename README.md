@@ -34,15 +34,15 @@ Terminal captures from **2026-03-30** (bundled under [`docs/screenshots/`](docs/
 - Auto-refreshes every second
 - **When qBittorrent is unreachable or login fails**, the app stays open with a short explanation, an empty list, **`r`** to retry manually, and (for connection issues) a **10s countdown** before automatic retry
 
-### What’s new in v0.4.0
+### What’s new in v0.5.0
 
-- **Vertical scrolling** — The torrent list and the **Content** tab file list **scroll** so the **selected row stays visible** when you move the cursor (including after toggling the details pane or resizing the terminal).
-- **Status on the border** — Aggregate **active / inactive** torrent counts, **peers**, and total **down / up** speeds appear **right-aligned on the torrent panel’s bottom edge** (inspired by [lazygit](https://github.com/jesseduffield/lazygit)-style footers): **grey** labels and **bright** values.
-- **Rounded corners** — Framed panels and dialogs use **rounded** box-drawing characters (**╭ ╮ ╰ ╯**), similar to lazygit’s default border style.
-- **Shortcut bar styling** — Bottom hints use **yellow** key glyphs and **blue** descriptions; the **Content** tab footer matches when showing **`e`** / **`←→`** / edit-mode hints.
-- **Layout polish** — Bottom strip spacing is tightened so the hint row sits **flush** under the torrent frame without an extra blank line; horizontal name scrolling works cleanly with selection highlighting (gocui highlight fix).
+- **Details title** — The details pane shows **Details** in its **top border**, like **Torrents** on the main pane.
+- **Content tab footer on the frame** — On the **Content** tab, **Total: N files** is **right-aligned** on the **details panel’s bottom border** (with the torrent stats); **shortcut hints** (**`e`**, **`←→`**, edit-mode keys) sit **left-aligned** on the **same** border—no separate strip stealing rows from the file list.
+- **Scrollbars (lazygit-style)** — When the torrent list or details content **scrolls vertically**, a **thumb** is drawn on the **right frame edge** (replacing that border segment)—**no extra column**; details track **per-tab** content height.
+- **Layout** — The details pane **shares its bottom row** with the global shortcut strip (no blank line above the hints when the details pane is open); list **footer** text is **inset** to match the title row.
+- **Shortcut hints** — The bottom bar uses compact **`←/→ name`** and **`+/- priority`** labels (yellow keys, blue slash and descriptions).
 
-Earlier releases: **v0.3.0** added horizontal name scrolling and README screenshots; **v0.2.0** added connection-error handling and Content-tab file priorities. See **`RELEASE_NOTES.md`** for full notes.
+Earlier releases: **v0.4.0** added vertical scrolling, torrent footer stats, rounded corners, and Content footer styling; **v0.3.0** added horizontal name scrolling and README screenshots. See **`RELEASE_NOTES.md`** for full notes.
 
 ## Requirements
 

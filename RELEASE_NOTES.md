@@ -1,3 +1,47 @@
+# qBitty v0.5.0
+
+Release notes for **v0.5.0** (from v0.4.0).
+
+---
+
+## Highlights
+
+- **Details panel title** — **Details** appears in the **top border** of the details pane, consistent with **Torrents** on the main list.
+- **Content tab on the frame** — **Total: N files** is **right-aligned** on the **details** panel’s **bottom border**; **Content** shortcut hints (**`e`**, **`←→`**, edit-mode keys) are **left-aligned** on that same border—content uses the full pane height without a second footer view below the list.
+- **Scroll indicators** — When content **overflows vertically**, a **scrollbar thumb** is drawn on the **right frame edge** of the torrent list and details pane ([lazygit](https://github.com/jesseduffield/lazygit)-style: **no extra terminal column**; the thumb overlays the border). Details reflect **per-tab** buffer height.
+- **Layout** — Details **bottom row** aligns with the **global shortcut strip** so there is **no spare blank line** above the hints when the details pane is open; list **footers** use the **same horizontal inset** as panel titles.
+- **Global shortcut bar** — Hints use compact **`←/→ name`** and **`+/- priority`** (yellow keys, blue slash and descriptions).
+
+---
+
+## Details and Content tab
+
+- **gocui** — **`FooterSpansLeft`** for left-aligned bottom-border segments; **`AfterDraw`** hook runs after views render (used for frame-edge scrollbars).
+- **Torrent / details footers** — **`drawListFooter`** inset matches **title** row padding (one cell inside the frame on left and right).
+
+---
+
+## Upgrading
+
+- **From source:** Check out tag `v0.5.0` and rebuild as usual.
+- **Homebrew:** After your tap points at `v0.5.0`, run:
+
+  ```bash
+  brew update && brew upgrade qbitty
+  ```
+
+  (Use the actual formula name if yours differs.)
+
+---
+
+## Full diff
+
+Compare to v0.4.0 on GitHub:
+
+<https://github.com/thatCraigW/qBitty/compare/v0.4.0...v0.5.0>
+
+---
+
 # qBitty v0.4.0
 
 Release notes for **v0.4.0** (from v0.3.0).
