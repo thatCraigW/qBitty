@@ -1944,13 +1944,12 @@ func writeShortcutsBarContent(v *gocui.View) {
 		return
 	}
 	// Keys in yellow (lazygit-style); descriptions use view FgColor (blue).
-	fmt.Fprintf(v, " %s←→%s name  %s⎵%s details  %ss%s stop/start  %sd%s delete  %s+%s pri up  %s-%s pri down  %sf%s filter  %sa%s add url  %sm%s magnet  %sq%s quit",
+	fmt.Fprintf(v, " %s←%s%s/%s→%s name  %s⎵%s details  %ss%s stop/start  %sd%s delete  %s+%s%s/%s-%s priority  %sf%s filter  %sa%s add url  %sm%s magnet  %sq%s quit",
+		yellowColor, resetColor, blueColor, yellowColor, resetColor,
 		yellowColor, resetColor,
 		yellowColor, resetColor,
 		yellowColor, resetColor,
-		yellowColor, resetColor,
-		yellowColor, resetColor,
-		yellowColor, resetColor,
+		yellowColor, resetColor, blueColor, yellowColor, resetColor,
 		yellowColor, resetColor,
 		yellowColor, resetColor,
 		yellowColor, resetColor,
