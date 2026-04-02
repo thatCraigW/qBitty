@@ -28,9 +28,11 @@ const (
 )
 
 var (
-	viewLeft                   = "torrentList"
-	viewDetails   = "details"
-	viewShortcuts = "shortcuts" // shortcut hints row below torrent panel (stats live on torrent Footer / bottom border)
+	viewLeft          = "torrentList"
+	viewTorrentScroll = "torrentScroll" // one-cell scrollbar column beside the torrent list
+	viewDetails       = "details"
+	viewDetailsScroll = "detailsScroll" // one-cell scrollbar column beside the details pane
+	viewShortcuts     = "shortcuts"     // shortcut hints row below torrent panel (stats live on torrent Footer / bottom border)
 	viewOverlay      = "overlay"
 	torrents         []Torrent
 	filteredTorrents []Torrent
@@ -291,7 +293,7 @@ func layout(g *gocui.Gui) error {
 		listY1 = maxY * 2 / 5
 	}
 
-	if v, err := g.SetView(viewLeft, 0, 0, maxX-1, listY1, 0); err != nil {
+	if v, err := g.SetView(viewLeft, 0, 0, maxX-3, listY1, 0); err != nil {
 		if !errors.Is(err, gocui.ErrUnknownView) {
 			return err
 		}
@@ -303,6 +305,13 @@ func layout(g *gocui.Gui) error {
 		refreshTorrentList(g, v)
 		scrollTorrentListSelectionIntoView(v)
 		_ = v.SetCursor(0, currentSelection+1)
+	}
+	if sv, err := g.SetView(viewTorrentScroll, maxX-2, 0, maxX, listY1, 0); err != nil {
+		if !errors.Is(err, gocui.ErrUnknownView) {
+			return err
+		}
+		sv.Frame = false
+		sv.Wrap = false
 	}
 	if lv, lerr := g.View(viewLeft); lerr == nil {
 		lv.Footer = ""
@@ -317,7 +326,7 @@ func layout(g *gocui.Gui) error {
 			detailsY1 = listY1 + 3
 		}
 		detailsMainY1 := detailsY1
-		if v, err := g.SetView(viewDetails, 0, listY1+1, maxX-1, detailsMainY1, 0); err != nil {
+		if v, err := g.SetView(viewDetails, 0, listY1+1, maxX-3, detailsMainY1, 0); err != nil {
 			if !errors.Is(err, gocui.ErrUnknownView) {
 				return err
 			}
@@ -329,8 +338,21 @@ func layout(g *gocui.Gui) error {
 			dv.Title = "Details"
 			dv.FrameRunes = roundedFrameRunes
 		}
+		if sv, err := g.SetView(viewDetailsScroll, maxX-2, listY1+1, maxX, detailsMainY1, 0); err != nil {
+			if !errors.Is(err, gocui.ErrUnknownView) {
+				return err
+			}
+			sv.Frame = false
+			sv.Wrap = false
+		}
 	} else {
 		g.DeleteView(viewDetails)
+		_ = g.DeleteView(viewDetailsScroll)
+	}
+
+	drawTorrentScrollbar(g)
+	if detailsVisible {
+		drawDetailsScrollbar(g)
 	}
 
 	v, err := g.SetView(viewShortcuts, 0, maxY-2, maxX-1, maxY, 0)
@@ -417,8 +439,8 @@ func layoutAPIErrorOverlay(g *gocui.Gui, maxX, maxY int) error {
 	return nil
 }
 
-// nameWidthForTorrentList returns the Name column width in monospace cells for a terminal of width maxX.
-func nameWidthForTorrentList(maxX int) int {
+// nameWidthForTorrentListInner returns the Name column width from the torrent view inner width (input: innerW).
+func nameWidthForTorrentListInner(innerW int) int {
 	const (
 		statusWidth     = 12
 		progressWidth   = 9
@@ -429,7 +451,8 @@ func nameWidthForTorrentList(maxX int) int {
 		seedsPeersWidth = 10
 		padding         = 8
 	)
-	nameWidth := maxX - (statusWidth + progressWidth + dlSpeedWidth + ulSpeedWidth + etaWidth + sizeWidth + seedsPeersWidth + padding)
+	fixed := statusWidth + progressWidth + dlSpeedWidth + ulSpeedWidth + etaWidth + sizeWidth + seedsPeersWidth + padding
+	nameWidth := innerW - fixed
 	if nameWidth < 20 {
 		nameWidth = 20
 	}
@@ -463,8 +486,12 @@ func scrollNameColumn(g *gocui.Gui, delta int) bool {
 	if t == nil {
 		return false
 	}
-	maxX, _ := g.Size()
-	nw := nameWidthForTorrentList(maxX)
+	lv, err := g.View(viewLeft)
+	if err != nil {
+		return false
+	}
+	innerW, _ := lv.Size()
+	nw := nameWidthForTorrentListInner(innerW)
 	rs := []rune(t.Name)
 	if len(rs) <= nw {
 		return false
@@ -563,9 +590,94 @@ func scrollTorrentListSelectionIntoView(v *gocui.View) {
 	_ = v.SetOrigin(0, oy)
 }
 
+// drawScrollbarColumn fills the track view with a vertical thumb when content overflows (input: track; totalLines = buffer height; oy = origin Y; visibleLines = viewport line count).
+func drawScrollbarColumn(track *gocui.View, totalLines, oy, visibleLines int) {
+	track.Clear()
+	_, h := track.Size()
+	if h < 1 || totalLines <= 0 {
+		return
+	}
+	if totalLines <= visibleLines {
+		return
+	}
+	maxOy := totalLines - visibleLines
+	if maxOy < 0 {
+		maxOy = 0
+	}
+	thumbH := (visibleLines*h + totalLines - 1) / totalLines
+	if thumbH < 1 {
+		thumbH = 1
+	}
+	if thumbH > h {
+		thumbH = h
+	}
+	thumbStart := 0
+	if maxOy > 0 && h > thumbH {
+		thumbStart = (oy*(h-thumbH) + maxOy/2) / maxOy
+	}
+	if thumbStart < 0 {
+		thumbStart = 0
+	}
+	if thumbStart+thumbH > h {
+		thumbStart = h - thumbH
+	}
+	for row := 0; row < h; row++ {
+		if row >= thumbStart && row < thumbStart+thumbH {
+			fmt.Fprintln(track, "█")
+		} else {
+			fmt.Fprintln(track, "│")
+		}
+	}
+}
+
+// drawTorrentScrollbar updates the torrent pane scrollbar from list origin and line count (input: g).
+func drawTorrentScrollbar(g *gocui.Gui) {
+	track, err := g.View(viewTorrentScroll)
+	if err != nil {
+		return
+	}
+	main, err := g.View(viewLeft)
+	if err != nil {
+		return
+	}
+	torrentsMu.RLock()
+	n := len(filteredTorrents)
+	torrentsMu.RUnlock()
+	totalLines := 1 + n
+	oy, _ := main.Origin()
+	_, vh := main.Size()
+	if vh < 1 {
+		return
+	}
+	visibleH := vh - 1
+	if visibleH < 1 {
+		visibleH = 1
+	}
+	drawScrollbarColumn(track, totalLines, oy, visibleH)
+}
+
+// drawDetailsScrollbar updates the details pane scrollbar from buffer height and origin (input: g).
+func drawDetailsScrollbar(g *gocui.Gui) {
+	track, err := g.View(viewDetailsScroll)
+	if err != nil {
+		return
+	}
+	main, err := g.View(viewDetails)
+	if err != nil {
+		return
+	}
+	totalLines := main.LinesHeight()
+	oy, _ := main.Origin()
+	_, vh := main.Size()
+	if vh < 1 {
+		return
+	}
+	drawScrollbarColumn(track, totalLines, oy, vh)
+}
+
 func refreshTorrentList(g *gocui.Gui, v *gocui.View) {
-	maxX, _ := g.Size()
-	nameWidth := nameWidthForTorrentList(maxX)
+	innerW, _ := v.Size()
+	nameWidth := nameWidthForTorrentListInner(innerW)
 
 	const (
 		statusWidth     = 12
