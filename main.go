@@ -20,11 +20,14 @@ const (
 	greenColor  = "\033[32m"
 	yellowColor = "\033[33m"
 	blueColor   = "\033[34m"
+	cyanColor   = "\033[36m"
 	greyMuted   = "\033[38;5;240m" // labels on status line
 	whiteBright = "\033[97m"       // values on status line
 
 	viewAPIError        = "apiError"
 	apiRetryIntervalSec = 10
+	// arrQueuePollInterval is how often Sonarr/Radarr GET /api/v3/queue runs (torrent list still polls qB every 1s).
+	arrQueuePollInterval = 10 * time.Second
 )
 
 var (
@@ -51,6 +54,10 @@ var (
 
 	arrSonarrClient *ArrHTTPClient // non-nil when config provides Sonarr URL + API key
 	arrRadarrClient *ArrHTTPClient // non-nil when config provides Radarr URL + API key
+
+	arrQueueMu         sync.RWMutex
+	sonarrQueueRecords []arrQueueRecord // snapshot from last GET /api/v3/queue (Sonarr)
+	radarrQueueRecords []arrQueueRecord // snapshot from last GET /api/v3/queue (Radarr)
 )
 
 // roundedFrameRunes matches lazygit's gui.Border "rounded" (─ │ ╭ ╮ ╰ ╯); assign to View.FrameRunes for framed panels.
@@ -123,15 +130,36 @@ func applyArrClientsFromConfig(cfg *Config) {
 		arrSonarrClient, arrRadarrClient = nil, nil
 		return
 	}
-	if strings.TrimSpace(cfg.SonarrURL) != "" && strings.TrimSpace(cfg.SonarrAPIKey) != "" {
+	if arrCredentialsUsable(cfg.SonarrURL, cfg.SonarrAPIKey) {
 		arrSonarrClient = NewArrHTTPClient(cfg.SonarrURL, cfg.SonarrAPIKey)
 	} else {
 		arrSonarrClient = nil
 	}
-	if strings.TrimSpace(cfg.RadarrURL) != "" && strings.TrimSpace(cfg.RadarrAPIKey) != "" {
+	if arrCredentialsUsable(cfg.RadarrURL, cfg.RadarrAPIKey) {
 		arrRadarrClient = NewArrHTTPClient(cfg.RadarrURL, cfg.RadarrAPIKey)
 	} else {
 		arrRadarrClient = nil
+	}
+}
+
+// refreshArrQueueCaches refetches Sonarr/Radarr /api/v3/queue when configured; logs errors and leaves prior cache on failure (inputs: none; output: updates sonarrQueueRecords and radarrQueueRecords).
+func refreshArrQueueCaches() {
+	arrQueueMu.Lock()
+	defer arrQueueMu.Unlock()
+	if arrSonarrClient != nil {
+		if recs, err := arrSonarrClient.FetchAllQueueRecords(); err == nil {
+			sonarrQueueRecords = recs
+		}
+		// Optional integration: on failure keep prior cache; do not log (avoids TUI stderr spam when *arr is down or misconfigured).
+	} else {
+		sonarrQueueRecords = nil
+	}
+	if arrRadarrClient != nil {
+		if recs, err := arrRadarrClient.FetchAllQueueRecords(); err == nil {
+			radarrQueueRecords = recs
+		}
+	} else {
+		radarrQueueRecords = nil
 	}
 }
 
@@ -157,6 +185,7 @@ func tryRecoverAPISync() {
 	torrents = newT
 	applyFilters()
 	torrentsMu.Unlock()
+	refreshArrQueueCaches()
 }
 
 // triggerAPIRetry runs a manual reconnect in the background and refreshes the UI when done.
@@ -176,11 +205,24 @@ func triggerAPIRetry(g *gocui.Gui) {
 
 func main() {
 	jsonDump := flag.Bool("dump-json", false, "Fetch torrents info and output raw JSON")
+	wizardFlag := flag.Bool("wizard", false, "Interactive setup when qBittorrent URL, username, or password is missing (same as QBITTY_WIZARD=1)")
 	flag.Parse()
 
-	cfg, err := LoadConfig()
+	cfg, err := mergeConfigFromFileAndEnv()
 	if err != nil {
 		log.Fatal(err)
+	}
+	if qbConfigIncomplete(cfg) {
+		if !(*wizardFlag || wizardEnvEnabled()) {
+			log.Fatal(validateRequiredQB(cfg))
+		}
+		cfg, err = runFirstLaunchWizard(cfg)
+		if err != nil {
+			log.Fatalf("Setup failed: %v", err)
+		}
+		if err := validateRequiredQB(cfg); err != nil {
+			log.Fatal(err)
+		}
 	}
 	applyArrClientsFromConfig(cfg)
 
@@ -212,6 +254,7 @@ func main() {
 			torrents = initialTorrents
 			applyFilters()
 			torrentsMu.Unlock()
+			refreshArrQueueCaches()
 		}
 	}
 
@@ -222,9 +265,10 @@ func main() {
 	g.AfterDraw = overlayScrollbars
 	defer g.Close()
 
-	// Create a ticker that fires every 1 second
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
+	torrentTicker := time.NewTicker(time.Second)
+	defer torrentTicker.Stop()
+	arrQueueTicker := time.NewTicker(arrQueuePollInterval)
+	defer arrQueueTicker.Stop()
 
 	// Use a channel to signal exit
 	done := make(chan struct{})
@@ -233,7 +277,7 @@ func main() {
 	go func() {
 		for {
 			select {
-			case <-ticker.C:
+			case <-torrentTicker.C:
 				apiErrMu.Lock()
 				st := apiErr
 				var shouldRecover bool
@@ -285,6 +329,11 @@ func main() {
 				g.Update(func(gui *gocui.Gui) error {
 					refreshDetailsPane(g)
 					return refreshUI(g)
+				})
+			case <-arrQueueTicker.C:
+				refreshArrQueueCaches()
+				g.Update(func(gui *gocui.Gui) error {
+					return refreshUI(gui)
 				})
 			case <-done:
 				return
@@ -711,6 +760,11 @@ func refreshTorrentList(g *gocui.Gui, v *gocui.View) {
 	fCategory := filterCategory
 	torrentsMu.RUnlock()
 
+	arrQueueMu.RLock()
+	sq := sonarrQueueRecords
+	rq := radarrQueueRecords
+	arrQueueMu.RUnlock()
+
 	if currentSelection >= 0 && currentSelection < len(localTorrents) {
 		rs := []rune(localTorrents[currentSelection].Name)
 		if len(rs) > nameWidth {
@@ -749,7 +803,6 @@ func refreshTorrentList(g *gocui.Gui, v *gocui.View) {
 		resetColor)
 
 	for i, t := range localTorrents {
-		colorState := colorForState(t.State)
 		downloadSpeedColor := colorForSpeed(t.DownloadSpeed)
 		uploadSpeedColor := colorForSpeed(t.UploadSpeed)
 
@@ -759,10 +812,10 @@ func refreshTorrentList(g *gocui.Gui, v *gocui.View) {
 		sizeStr := formatSize(t.Size)
 		etaStr := formatETA(t.ETA)
 
-		cleanStatus := cleanStatusString(t.State)
+		displayStatus, displayStatusColor := torrentStatusColumnText(t, sq, rq)
 
-		// Determine if status is moving, stopped, or stalled
-		statusLower := strings.ToLower(cleanStatus)
+		// Determine if status is moving, stopped, or stalled (use qB state for ETA/speed, not *arr label)
+		statusLower := strings.ToLower(cleanStatusString(t.State))
 
 		// Only override when status is exactly 'moving', 'stopped', or 'stalled'
 		if statusLower != "downloading" && statusLower != "stalled" {
@@ -772,7 +825,7 @@ func refreshTorrentList(g *gocui.Gui, v *gocui.View) {
 		}
 
 		progressCol := fmt.Sprintf("%*s", progressWidth, fmt.Sprintf("%.2f%%", t.Progress*100))
-		statusCol := fmt.Sprintf("%s%-*s%s", colorState, statusWidth, cleanStatus, resetColor)
+		statusCol := fmt.Sprintf("%s%-*s%s", displayStatusColor, statusWidth, displayStatus, resetColor)
 		dlSpeedCol := fmt.Sprintf("%s%-*s%s", downloadSpeedColor, dlSpeedWidth, dlSpeedStr, resetColor)
 		ulSpeedCol := fmt.Sprintf("%s%-*s%s", uploadSpeedColor, ulSpeedWidth, uploadSpeedStr, resetColor)
 		etaCol := fmt.Sprintf("%-*s", etaWidth, etaStr)
@@ -1370,6 +1423,7 @@ func refreshTorrentsFromAPI(g *gocui.Gui, client *QBClient) error {
 	torrents = newT
 	applyFilters()
 	torrentsMu.Unlock()
+	refreshArrQueueCaches()
 	refreshDetailsPane(g)
 	return refreshUI(g)
 }

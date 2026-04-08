@@ -34,13 +34,13 @@ Terminal captures from **2026-03-30** (bundled under [`docs/screenshots/`](docs/
 - Auto-refreshes every second
 - **When qBittorrent is unreachable or login fails**, the app stays open with a short explanation, an empty list, **`r`** to retry manually, and (for connection issues) a **10s countdown** before automatic retry
 
-### What’s new in v0.6.0
+### What’s new in v0.7.0
 
-- **Sonarr / Radarr blocklist (`b`)** — With optional **`sonarr_*` / `radarr_*`** in config (or **`SONARR_*` / `RADARR_*`** env vars), **`b`** blocklists the release in the matching app when the torrent **category** is **`Sonarr`** or **`Radarr`** and the job is still in that app’s **queue** (same behavior as removing from queue with blocklist in the *arr UI). If *arr is not configured or the category does not match, **`b`** offers **remove from qBittorrent only**, with copy explaining that the client cannot block future grabs.
-- **Config file loading** — Reads **`~/.config/qbitty/config.json`** even when **`XDG_CONFIG_HOME`** points elsewhere; strips a **UTF-8 BOM**; **invalid JSON** fails at startup with a clear error instead of failing silently (so env vars no longer mask a broken file).
-- **Documentation** — README includes **minimal** and **full** `config.json` examples (qBittorrent + optional *arr), env table, and **`b`** in the shortcut list.
+- **First-launch setup wizard** — If **qBittorrent URL, username, or password** is missing after loading config and env, run with **`QBITTY_WIZARD=1`**, **`WIZARD=1`**, or **`--wizard`** for interactive prompts. Values are saved to **`~/.config/qbitty/config.json`** (or **`$XDG_CONFIG_HOME/qbitty/config.json`** when set). The wizard optionally asks for **Sonarr** and **Radarr** URLs and API keys; answering **no** skips *arr and leaves those keys out of the file.
+- **Sonarr / Radarr status in the torrent list** — For torrents in category **`Sonarr`** or **`Radarr`**, the **Status** column can show *arr pipeline state (for example **import pending**, **importing**) when the download is tracked in that app’s queue and past active client download. Other categories are unchanged. Queue data is refreshed about every **10 seconds** (qBittorrent still refreshes every second).
+- **Quieter optional *arr** — Sonarr/Radarr HTTP clients are only enabled when the URL is valid **`http`/`https`** with a host **and** an API key is set. Failed queue fetches no longer spam **stderr** (they keep the last good snapshot).
 
-Earlier releases: **v0.5.0** added details title, Content footer on the frame, scrollbars, and shortcut bar tweaks; **v0.4.0** added vertical scrolling and torrent footer stats. See **`RELEASE_NOTES.md`** for full notes.
+Earlier releases: **v0.6.0** added *arr blocklist via **`b`** and stricter config loading; **v0.5.0** added details title, Content footer on the frame, scrollbars, and shortcut bar tweaks. See **`RELEASE_NOTES.md`** for full notes.
 
 ## Requirements
 
@@ -78,6 +78,18 @@ Install the binary somewhere on your `PATH` if you want to run `qbitty` from any
 ## Configuration
 
 qBitty loads credentials from a **config file** first, then applies any **environment variable** overrides on top. This means you can use either method (or both).
+
+### First-time setup (wizard)
+
+If **any** of **url**, **username**, or **password** is still empty after reading the config file and env, you can run an interactive setup instead of creating **`config.json`** by hand:
+
+```bash
+QBITTY_WIZARD=1 qbitty
+# or: WIZARD=1 qbitty
+# or: qbitty --wizard
+```
+
+You will be prompted for qBittorrent Web UI URL, username, and password (password is hidden). Then you can choose whether to add **Sonarr** and **Radarr** (base URL + API key each). Answering **no** skips that app and omits those keys from the saved file. The file is written with mode **`600`**.
 
 ### Config file (recommended)
 
@@ -130,6 +142,8 @@ You can use environment variables instead of a config file, or to override indiv
 | `SONARR_API_KEY`   | Sonarr API key (**Settings → Security**)         |                            |
 | `RADARR_URL`       | Radarr base URL (optional; blocklist via **`b`**) | `http://localhost:7878`    |
 | `RADARR_API_KEY`   | Radarr API key (**Settings → Security**)       |                            |
+| `QBITTY_WIZARD`    | If **`1`** / **`true`** / **`yes`** / **`on`**, run interactive setup when qB credentials are incomplete (same as **`--wizard`**) | |
+| `WIZARD`           | Same as **`QBITTY_WIZARD`** (either variable works) | |
 
 ### Resolution order
 
@@ -168,6 +182,9 @@ QB_URL=https://localhost:8080 QB_USER=admin QB_PASS=secret qbitty
 
 # Dump raw torrent JSON to stdout (still exits on login failure)
 qbitty --dump-json
+
+# Interactive config when url / username / password are missing (see "First-time setup")
+QBITTY_WIZARD=1 qbitty
 ```
 
 ## Keyboard Shortcuts

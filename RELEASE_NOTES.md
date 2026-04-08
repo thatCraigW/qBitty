@@ -1,3 +1,39 @@
+# qBitty v0.7.0
+
+Release notes for **v0.7.0** (from v0.6.0).
+
+---
+
+## Highlights
+
+- **First-launch setup wizard** — When **qBittorrent `url`**, **`username`**, or **`password`** is missing after merging config file and environment variables, you can run with **`QBITTY_WIZARD=1`**, **`WIZARD=1`**, or **`--wizard`** to be prompted for each missing field (password entry is hidden). The wizard then asks whether to configure **Sonarr** and **Radarr**; answering **no** skips that app and does not write optional keys. Configuration is saved to **`$XDG_CONFIG_HOME/qbitty/config.json`** (when set) or **`~/.config/qbitty/config.json`**, mode **`600`**.
+- **Sonarr / Radarr status in the torrent list** — For torrents whose qBittorrent **category** is **`Sonarr`** or **`Radarr`**, the **Status** column can show *arr queue-derived labels (for example **import pending**, **importing**) when the job is still in that app’s **`/api/v3/queue`** and past active download in the client. Other categories keep the normal qBittorrent status text. Queue snapshots are polled about every **10 seconds** (the qBittorrent list still updates every second).
+- **Optional *arr behavior** — Sonarr/Radarr clients are only created when the base URL parses as **`http`/`https`** with a host **and** an API key is set. Failed queue fetches no longer log to **stderr** on every poll (last successful snapshot is retained).
+- **Dependencies** — Direct **`golang.org/x/term`** for hidden password input in the wizard.
+
+---
+
+## Upgrading
+
+- **From source:** Check out tag `v0.7.0` and rebuild as usual.
+- **Homebrew:** After your tap points at `v0.7.0`, run:
+
+  ```bash
+  brew update && brew upgrade qbitty
+  ```
+
+  (Use the actual formula name if yours differs.)
+
+---
+
+## Full diff
+
+Compare to v0.6.0 on GitHub:
+
+<https://github.com/thatCraigW/qBitty/compare/v0.6.0...v0.7.0>
+
+---
+
 # qBitty v0.6.0
 
 Release notes for **v0.6.0** (from v0.5.0).

@@ -3,9 +3,11 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Config holds qBittorrent connection credentials and optional Sonarr/Radarr API settings for queue blocklist.
@@ -21,14 +23,18 @@ type Config struct {
 	RadarrAPIKey string `json:"radarr_api_key,omitempty"`
 }
 
-// LoadConfig reads the first existing config file from configFileCandidates, then applies env var overrides; returns error if any required field is missing or the config file is invalid JSON.
-func LoadConfig() (*Config, error) {
+// mergeConfigFromFileAndEnv loads the first existing config file if any, applies env overrides, and does not require qB fields to be set (inputs: none; output: merged config or I/O/JSON error).
+func mergeConfigFromFileAndEnv() (*Config, error) {
 	cfg := &Config{}
-
 	if err := loadConfigFromFile(cfg); err != nil {
 		return nil, err
 	}
+	applyEnvOverrides(cfg)
+	return cfg, nil
+}
 
+// applyEnvOverrides replaces config fields from QB_* and SONARR_* / RADARR_* when those env vars are non-empty (input/output: cfg pointer).
+func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("QB_URL"); v != "" {
 		cfg.URL = v
 	}
@@ -50,19 +56,36 @@ func LoadConfig() (*Config, error) {
 	if v := os.Getenv("RADARR_API_KEY"); v != "" {
 		cfg.RadarrAPIKey = v
 	}
+}
 
-	if cfg.URL == "" || cfg.Username == "" || cfg.Password == "" {
-		return nil, fmt.Errorf(
-			"configuration required\n\n" +
-				"  Create ~/.config/qbitty/config.json:\n\n" +
-				"    {\n" +
-				"      \"url\": \"https://your-qbittorrent:8080\",\n" +
-				"      \"username\": \"admin\",\n" +
-				"      \"password\": \"your-password\"\n" +
-				"    }\n\n" +
-				"  Or set environment variables: QB_URL, QB_USER, QB_PASS")
+// qbConfigIncomplete is true when url, username, or password is missing after trim (input: merged config).
+func qbConfigIncomplete(cfg *Config) bool {
+	if cfg == nil {
+		return true
 	}
+	return strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Username) == "" || strings.TrimSpace(cfg.Password) == ""
+}
 
+// ErrConfigRequired is returned when url, username, or password is missing after merge (wizard and LoadConfig use this).
+var ErrConfigRequired = errors.New("configuration required")
+
+// validateRequiredQB returns ErrConfigRequired with setup hints if url, username, or password is empty (input: merged config).
+func validateRequiredQB(cfg *Config) error {
+	if qbConfigIncomplete(cfg) {
+		return fmt.Errorf("%w\n\n  Create ~/.config/qbitty/config.json:\n\n    {\n      \"url\": \"https://your-qbittorrent:8080\",\n      \"username\": \"admin\",\n      \"password\": \"your-password\"\n    }\n\n  Or set environment variables: QB_URL, QB_USER, QB_PASS\n\n  Or run with QBITTY_WIZARD=1 (or --wizard) for interactive setup when credentials are missing", ErrConfigRequired)
+	}
+	return nil
+}
+
+// LoadConfig reads config from file + env and returns an error if any required qBittorrent field is missing (same behavior as before mergeConfigFromFileAndEnv existed).
+func LoadConfig() (*Config, error) {
+	cfg, err := mergeConfigFromFileAndEnv()
+	if err != nil {
+		return nil, err
+	}
+	if err := validateRequiredQB(cfg); err != nil {
+		return nil, err
+	}
 	return cfg, nil
 }
 
@@ -83,6 +106,28 @@ func loadConfigFromFile(cfg *Config) error {
 		return nil
 	}
 	return nil
+}
+
+// PrimaryConfigWritePath returns the preferred path for creating or updating config.json (same order as load: XDG first, then ~/.config).
+func PrimaryConfigWritePath() (string, error) {
+	cands := configFileCandidates()
+	if len(cands) == 0 {
+		return "", fmt.Errorf("cannot determine config directory (set HOME or XDG_CONFIG_HOME)")
+	}
+	return cands[0], nil
+}
+
+// writeConfigFile writes cfg as indented JSON with 0600 permissions (inputs: path and config; output: I/O error).
+func writeConfigFile(path string, cfg *Config) error {
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o600)
 }
 
 // configFileCandidates returns paths to try in order: $XDG_CONFIG_HOME/qbitty/config.json (if set), then ~/.config/qbitty/config.json so a file under ~/.config still loads when XDG_CONFIG_HOME points elsewhere.
