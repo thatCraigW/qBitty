@@ -29,18 +29,16 @@ Terminal captures from **2026-03-30** (bundled under [`docs/screenshots/`](docs/
   - **HTTP Sources** -- web seed URLs
   - **Content** -- file list with size, progress, and priority; **`e`** enters edit mode to change per-file priority (**`p`** cycles Skip → Normal → High → Maximum)
 - Filter torrents by status and/or category
-- Torrent actions: stop/start, delete, increase/decrease priority
+- Torrent actions: stop/start, **force recheck** (**`r`**), delete, increase/decrease priority
 - Add new torrents by URL or magnet link
 - Auto-refreshes every second
 - **When qBittorrent is unreachable or login fails**, the app stays open with a short explanation, an empty list, **`r`** to retry manually, and (for connection issues) a **10s countdown** before automatic retry
 
-### What’s new in v0.7.0
+### What’s new in v0.8.0
 
-- **First-launch setup wizard** — If **qBittorrent URL, username, or password** is missing after loading config and env, run with **`QBITTY_WIZARD=1`**, **`WIZARD=1`**, or **`--wizard`** for interactive prompts. Values are saved to **`~/.config/qbitty/config.json`** (or **`$XDG_CONFIG_HOME/qbitty/config.json`** when set). The wizard optionally asks for **Sonarr** and **Radarr** URLs and API keys; answering **no** skips *arr and leaves those keys out of the file.
-- **Sonarr / Radarr status in the torrent list** — For torrents in category **`Sonarr`** or **`Radarr`**, the **Status** column can show *arr pipeline state (for example **import pending**, **importing**) when the download is tracked in that app’s queue and past active client download. Other categories are unchanged. Queue data is refreshed about every **10 seconds** (qBittorrent still refreshes every second).
-- **Quieter optional *arr** — Sonarr/Radarr HTTP clients are only enabled when the URL is valid **`http`/`https`** with a host **and** an API key is set. Failed queue fetches no longer spam **stderr** (they keep the last good snapshot).
+- **Force recheck** — Press **`r`** on the torrent list to queue qBittorrent’s **Force recheck** for the selected torrent (Web API `torrents/recheck`). When the **connection/login** banner is visible, **`r`** still means **retry now** (unchanged).
 
-Earlier releases: **v0.6.0** added *arr blocklist via **`b`** and stricter config loading; **v0.5.0** added details title, Content footer on the frame, scrollbars, and shortcut bar tweaks. See **`RELEASE_NOTES.md`** for full notes.
+Earlier releases: **v0.7.0** added the first-launch wizard, Sonarr/Radarr status in the list, and quieter optional *arr. **v0.6.0** added *arr blocklist via **`b`** and stricter config loading. See **`RELEASE_NOTES.md`** for full notes.
 
 ## Requirements
 
@@ -204,7 +202,7 @@ QBITTY_WIZARD=1 qbitty
 | `f`         | Filter by status and/or category                                       |
 | `a`         | Add torrent by URL                                                     |
 | `m`         | Add torrent by magnet link                                             |
-| `r`         | When the connection/login banner is visible: retry now                 |
+| `r`         | **Force recheck** selected torrent; when the connection/login banner is visible: **retry now** |
 | `q`         | Quit                                                                   |
 
 **Details tab navigation with `Left` / `Right`:** On the **Content** tab (**5**), **←** / **→** scroll the file name first when the path is longer than the column; at the ends of the scroll (or if the name fits), **←** moves to the previous tab and **→** scrolls the torrent name in the main list (there is no tab to the right of Content). On other tabs, **←** / **→** move between tabs as before.

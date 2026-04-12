@@ -1,3 +1,36 @@
+# qBitty v0.8.0
+
+Release notes for **v0.8.0** (from v0.7.0).
+
+---
+
+## Highlights
+
+- **Force recheck (`r`)** — On the torrent list, **`r`** queues qBittorrent **Force recheck** for the **selected** torrent via **`POST /api/v2/torrents/recheck`**. The shortcut bar shows **`r` recheck** when connected. If the **connection/login** overlay is showing, **`r`** still triggers **manual API retry** (same as v0.7.0).
+
+---
+
+## Upgrading
+
+- **From source:** Check out tag `v0.8.0` and rebuild as usual.
+- **Homebrew:** After your tap points at `v0.8.0`, run:
+
+  ```bash
+  brew update && brew upgrade qbitty
+  ```
+
+  (Use the actual formula name if yours differs.)
+
+---
+
+## Full diff
+
+Compare to v0.7.0 on GitHub:
+
+<https://github.com/thatCraigW/qBitty/compare/v0.7.0...v0.8.0>
+
+---
+
 # qBitty v0.7.0
 
 Release notes for **v0.7.0** (from v0.6.0).

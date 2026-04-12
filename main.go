@@ -1063,8 +1063,9 @@ func keybindings(g *gocui.Gui, client *QBClient) error {
 		apiErrMu.Unlock()
 		if has {
 			triggerAPIRetry(g)
+			return nil
 		}
-		return nil
+		return recheckSelectedTorrent(g, client)
 	}); err != nil {
 		return err
 	}
@@ -1317,6 +1318,18 @@ func toggleTorrent(g *gocui.Gui, client *QBClient) error {
 		if err := client.StopTorrents(t.Hash); err != nil {
 			log.Printf("stop error: %v", err)
 		}
+	}
+	return nil
+}
+
+// recheckSelectedTorrent queues a force recheck on the selected torrent via qBittorrent API (inputs: g, client; output: error only from view ops, API errors are logged).
+func recheckSelectedTorrent(g *gocui.Gui, client *QBClient) error {
+	t := getSelectedTorrent()
+	if t == nil {
+		return nil
+	}
+	if err := client.RecheckTorrents(t.Hash); err != nil {
+		log.Printf("recheck error: %v", err)
 	}
 	return nil
 }
@@ -2181,8 +2194,9 @@ func writeShortcutsBarContent(v *gocui.View) {
 		return
 	}
 	// Keys in yellow (lazygit-style); descriptions use view FgColor (blue).
-	fmt.Fprintf(v, " %s←%s%s/%s→%s name  %s⎵%s details  %ss%s stop/start  %sd%s delete  %sb%s blocklist  %s+%s%s/%s-%s priority  %sf%s filter  %sa%s add url  %sm%s magnet  %sq%s quit",
+	fmt.Fprintf(v, " %s←%s%s/%s→%s name  %s⎵%s details  %ss%s stop/start  %sr%s recheck  %sd%s delete  %sb%s blocklist  %s+%s%s/%s-%s priority  %sf%s filter  %sa%s add url  %sm%s magnet  %sq%s quit",
 		yellowColor, resetColor, blueColor, yellowColor, resetColor,
+		yellowColor, resetColor,
 		yellowColor, resetColor,
 		yellowColor, resetColor,
 		yellowColor, resetColor,

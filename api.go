@@ -151,6 +151,11 @@ func (c *QBClient) StartTorrents(hashes string) error {
 	return c.postAction("/api/v2/torrents/start", url.Values{"hashes": {hashes}})
 }
 
+// RecheckTorrents queues a force recheck for the given torrent hashes (pipe-separated).
+func (c *QBClient) RecheckTorrents(hashes string) error {
+	return c.postAction("/api/v2/torrents/recheck", url.Values{"hashes": {hashes}})
+}
+
 // DeleteTorrent removes a torrent; deleteFiles controls whether downloaded data is also removed.
 func (c *QBClient) DeleteTorrent(hash string, deleteFiles bool) error {
 	df := "false"
