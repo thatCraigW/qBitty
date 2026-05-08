@@ -34,11 +34,11 @@ Terminal captures from **2026-03-30** (bundled under [`docs/screenshots/`](docs/
 - Auto-refreshes every second
 - **When qBittorrent is unreachable or login fails**, the app stays open with a short explanation, an empty list, **`r`** to retry manually, and (for connection issues) a **10s countdown** before automatic retry
 
-### What’s new in v0.8.0
+### What’s new in v0.8.1
 
-- **Force recheck** — Press **`r`** on the torrent list to queue qBittorrent’s **Force recheck** for the selected torrent (Web API `torrents/recheck`). When the **connection/login** banner is visible, **`r`** still means **retry now** (unchanged).
+- **qBittorrent 5.2+** — Login and empty **POST** responses accept **HTTP 204** as well as the older **200** behavior, so qBitty works with qBittorrent’s Web API after the 5.2 status-code changes.
 
-Earlier releases: **v0.7.0** added the first-launch wizard, Sonarr/Radarr status in the list, and quieter optional *arr. **v0.6.0** added *arr blocklist via **`b`** and stricter config loading. See **`RELEASE_NOTES.md`** for full notes.
+**v0.8.0** added **force recheck** (**`r`** on the torrent list). Earlier releases: **v0.7.0** brought the first-launch wizard, Sonarr/Radarr status in the list, and quieter optional *arr. **v0.6.0** added *arr blocklist via **`b`** and stricter config loading. See **`RELEASE_NOTES.md`** for full notes.
 
 ## Requirements
 

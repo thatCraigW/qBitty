@@ -75,9 +75,10 @@ func (c *QBClient) Login(username, password string) error {
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
-	// qbittorrent returns HTTP 200 with "" or "Ok." body on success
-	// and HTTP 403 or message on failure
-	if resp.StatusCode != 200 || (string(body) != "" && string(body) != "Ok.") {
+	// qBittorrent <5.2: HTTP 200 with "" or "Ok."; ≥5.2: HTTP 204 No Content on success (empty body).
+	loginOK := (resp.StatusCode == http.StatusOK && (len(body) == 0 || string(body) == "Ok.")) ||
+		resp.StatusCode == http.StatusNoContent
+	if !loginOK {
 		return fmt.Errorf("login failed: status %d body %q", resp.StatusCode, string(body))
 	}
 
@@ -134,7 +135,7 @@ func (c *QBClient) postAction(endpoint string, data url.Values) error {
 		return err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
 		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("API %s returned status %d: %s", endpoint, resp.StatusCode, string(body))
 	}

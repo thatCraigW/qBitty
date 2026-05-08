@@ -1,3 +1,36 @@
+# qBitty v0.8.1
+
+Release notes for **v0.8.1** (from v0.8.0).
+
+---
+
+## Highlights
+
+- **qBittorrent 5.2+ Web API** — Successful **`/api/v2/auth/login`** can return **HTTP 204 No Content** with an empty body (qBittorrent 5.2+). qBitty no longer treats that as a failed login. **POST** actions that return **204** for an empty response are accepted as well.
+
+---
+
+## Upgrading
+
+- **From source:** Check out tag `v0.8.1` and rebuild as usual.
+- **Homebrew:** After your tap points at `v0.8.1`, run:
+
+  ```bash
+  brew update && brew upgrade qbitty
+  ```
+
+  (Use the actual formula name if yours differs.)
+
+---
+
+## Full diff
+
+Compare to v0.8.0 on GitHub:
+
+<https://github.com/thatCraigW/qBitty/compare/v0.8.0...v0.8.1>
+
+---
+
 # qBitty v0.8.0
 
 Release notes for **v0.8.0** (from v0.7.0).
