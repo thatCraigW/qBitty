@@ -92,9 +92,15 @@ You will be prompted for qBittorrent Web UI URL, username, and password (passwor
 ### Config file (recommended)
 
 Create `~/.config/qbitty/config.json`. Below are copy-paste-friendly examples (2-space indentation).
+**qBittorrent with API key** (required keys; alternative to username/password):
+```json
+{
+  "url": "https://localhost:8080",
+  "api_key": "your-qbittorrent-api-key"
+}
+```
 
-**qBittorrent only** (required keys):
-
+**Or qBittorrent with username/password** (classic auth, still works):
 ```json
 {
   "url": "https://localhost:8080",
@@ -104,22 +110,6 @@ Create `~/.config/qbitty/config.json`. Below are copy-paste-friendly examples (2
 ```
 
 **With optional Sonarr / Radarr** (for **`b`** blocklist when qBittorrent categories are `Sonarr` or `Radarr`; omit any block you do not use):
-
-```json
-{
-  "url": "https://localhost:8080",
-  "username": "admin",
-  "password": "your-password",
-
-  "sonarr_url": "http://127.0.0.1:8989",
-  "sonarr_api_key": "your-sonarr-api-key",
-
-  "radarr_url": "http://127.0.0.1:7878",
-  "radarr_api_key": "your-radarr-api-key"
-}
-```
-
-If `sonarr_*` / `radarr_*` are omitted, **`b`** still offers to remove the torrent from qBittorrent only.
 
 Restrict permissions so only your user can read it:
 
@@ -131,6 +121,19 @@ chmod 600 ~/.config/qbitty/config.json
 
 You can use environment variables instead of a config file, or to override individual values from the config file:
 
+
+| Variable           | Description                                      | Example                    |
+|--------------------|--------------------------------------------------|----------------------------|
+| `QB_URL`           | qBittorrent WebUI URL                            | `https://localhost:8080`   |
+| `QB_USER`          | WebUI username (or omit and use API key)         | `admin`                    |
+| `QB_PASS`          | WebUI password (or omit and use API key)         | `secret`                   |
+| `QB_API_KEY`       | qBittorrent v5.2+ API key (alternative auth)     | `your-api-key-here`        |
+| `SONARR_URL`       | Sonarr base URL (optional; blocklist via **`b`**) | `http://localhost:8989`    |
+| `SONARR_API_KEY`   | Sonarr API key (**Settings → Security**)         |                            |
+| `RADARR_URL`       | Radarr base URL (optional; blocklist via **`b`**) | `http://localhost:7878`    |
+| `RADARR_API_KEY`   | Radarr API key (**Settings → Security**)       |                            |
+| `QBITTY_WIZARD`    | If **`1`** / **`true`** / **`yes`** / **`on`**, run interactive setup when qB credentials are incomplete (same as **`--wizard`**) | |
+| `WIZARD`           | Same as **`QBITTY_WIZARD`** (either variable works) | |
 | Variable           | Description                                      | Example                    |
 |--------------------|--------------------------------------------------|----------------------------|
 | `QB_URL`           | qBittorrent WebUI URL                            | `https://localhost:8080`   |
@@ -141,16 +144,16 @@ You can use environment variables instead of a config file, or to override indiv
 | `RADARR_URL`       | Radarr base URL (optional; blocklist via **`b`**) | `http://localhost:7878`    |
 | `RADARR_API_KEY`   | Radarr API key (**Settings → Security**)       |                            |
 | `QBITTY_WIZARD`    | If **`1`** / **`true`** / **`yes`** / **`on`**, run interactive setup when qB credentials are incomplete (same as **`--wizard`**) | |
-| `WIZARD`           | Same as **`QBITTY_WIZARD`** (either variable works) | |
+
 
 ### Resolution order
 
 1. Read the first config file that exists, in this order: `$XDG_CONFIG_HOME/qbitty/config.json` (when `XDG_CONFIG_HOME` is set), then `~/.config/qbitty/config.json`. (If `XDG_CONFIG_HOME` points somewhere other than `~/.config`, your file under `~/.config` is still tried second.)
 2. Override with environment variables (if set): `QB_*`, and optionally `SONARR_*` / `RADARR_*`.
 
-Invalid JSON in the config file is reported at startup (it is not ignored). Required qBittorrent keys are `url`, `username`, `password` in JSON (not `QB_URL`-style names). Optional keys are `sonarr_url`, `sonarr_api_key`, `radarr_url`, `radarr_api_key`.
+Invalid JSON in the config file is reported at startup (it is not ignored). Required qBittorrent keys are `url`, `username`, `password` OR `api_key` in JSON. Optional keys are `sonarr_url`, `sonarr_api_key`, `radarr_url`, `radarr_api_key`.
 
-This is useful if you want to keep your URL and username in the config file but pass the password via an env var for extra safety.
+This is useful if you want to keep your URL and username in the config file but pass the password via an env var for extra safety. (If using API key auth, omit both `username` and `password`.)
 
 ### HTTPS and connection security
 

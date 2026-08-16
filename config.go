@@ -15,6 +15,7 @@ type Config struct {
 	URL      string `json:"url"`
 	Username string `json:"username"`
 	Password string `json:"password"`
+	APIKey   string `json:"api_key,omitempty"`
 	// SonarrURL and SonarrAPIKey enable blocklist for torrents in category "Sonarr" (GET/DELETE /api/v3/queue).
 	SonarrURL    string `json:"sonarr_url,omitempty"`
 	SonarrAPIKey string `json:"sonarr_api_key,omitempty"`
@@ -58,12 +59,12 @@ func applyEnvOverrides(cfg *Config) {
 	}
 }
 
-// qbConfigIncomplete is true when url, username, or password is missing after trim (input: merged config).
+// qbConfigIncomplete is true when url is missing OR (username/password AND api_key are all empty) after trim (input: merged config).
 func qbConfigIncomplete(cfg *Config) bool {
 	if cfg == nil {
 		return true
 	}
-	return strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Username) == "" || strings.TrimSpace(cfg.Password) == ""
+	return strings.TrimSpace(cfg.URL) == "" || (strings.TrimSpace(cfg.Username) == "" && strings.TrimSpace(cfg.Password) == "" && strings.TrimSpace(cfg.APIKey) == "")
 }
 
 // ErrConfigRequired is returned when url, username, or password is missing after merge (wizard and LoadConfig use this).
@@ -72,7 +73,7 @@ var ErrConfigRequired = errors.New("configuration required")
 // validateRequiredQB returns ErrConfigRequired with setup hints if url, username, or password is empty (input: merged config).
 func validateRequiredQB(cfg *Config) error {
 	if qbConfigIncomplete(cfg) {
-		return fmt.Errorf("%w\n\n  Create ~/.config/qbitty/config.json:\n\n    {\n      \"url\": \"https://your-qbittorrent:8080\",\n      \"username\": \"admin\",\n      \"password\": \"your-password\"\n    }\n\n  Or set environment variables: QB_URL, QB_USER, QB_PASS\n\n  Or run with QBITTY_WIZARD=1 (or --wizard) for interactive setup when credentials are missing", ErrConfigRequired)
+		return fmt.Errorf("%w\n\n  Create ~/.config/qbitty/config.json:\n\n    {\n      \"url\": \"https://your-qbittorrent:8080\",\n      \"username\": \"admin\",\n      \"password\": \"your-password\"\n    }\n\n  Or set environment variables: QB_URL, QB_USER, QB_PASS\n\n  Or run with QBITTY_WIZARD=1 (or --wizard) for interactive setup when credentials are missing\n\n  For qBittorrent v5.2+, you can also use an API key instead:\n    {\n      \"url\": \"https://your-qbittorrent:8080\",\n      \"api_key\": \"your-api-key-here\"\n    }", ErrConfigRequired)
 	}
 	return nil
 }

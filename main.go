@@ -171,7 +171,7 @@ func tryRecoverAPISync() {
 		return
 	}
 	applyArrClientsFromConfig(cfg)
-	if err := apiClient.Login(cfg.Username, cfg.Password); err != nil {
+	if err := apiClient.Login(cfg.Username, cfg.Password, cfg.APIKey); err != nil {
 		setAPIError(err)
 		return
 	}
@@ -232,7 +232,7 @@ func main() {
 	}
 
 	if *jsonDump {
-		if err := apiClient.Login(cfg.Username, cfg.Password); err != nil {
+		if err := apiClient.Login(cfg.Username, cfg.Password, cfg.APIKey); err != nil {
 			log.Fatalf("Failed to login: %v", err)
 		}
 		jsonData, err := apiClient.GetTorrentsRaw()
@@ -243,7 +243,7 @@ func main() {
 		os.Exit(0)
 	}
 
-	if err := apiClient.Login(cfg.Username, cfg.Password); err != nil {
+	if err := apiClient.Login(cfg.Username, cfg.Password, cfg.APIKey); err != nil {
 		setAPIError(err)
 	} else {
 		initialTorrents, ferr := apiClient.GetTorrents()

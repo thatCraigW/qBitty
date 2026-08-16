@@ -31,6 +31,55 @@ Compare to v0.8.0 on GitHub:
 
 ---
 
+
+# qBitty v0.8.2
+
+Release notes for **v0.8.2** (from v0.8.1).
+
+---
+
+## Highlights
+
+- **qBittorrent API key authentication** — For qBittorrent v5.2+, you can now authenticate using an API key instead of username/password. Create `~/.config/qBitty/config.json`:
+
+  ```json
+  {
+    "url": "https://your-qbittorrent:8080",
+    "api_key": "your-api-key-here"
+  }
+  ```
+
+  Environment variables also support API key auth (`QB_API_KEY`). The wizard and config examples now show this as the recommended alternative to classic username/password authentication.
+
+---
+
+## Upgrading
+
+- **From source:** Check out tag `v0.8.2` and rebuild as usual.
+- **Homebrew:** After your tap points at `v0.8.2`, run:
+
+  ```bash
+  brew update && brew upgrade qbitty
+  ```
+
+  (Use the actual formula name if yours differs.)
+
+---
+
+## Full diff
+
+Compare to v0.8.1 on GitHub:
+
+<https://github.com/thatCraigW/qBitty/compare/v0.8.1...v0.8.2>
+
+---
+- **Force recheck (`r`)** — On the torrent list, **`r`** queues qBittorrent **Force recheck** for the **selected** torrent via **`POST /api/v2/torrents/recheck`**. The shortcut bar shows **`r` recheck** when connected. If the **connection/login** overlay is showing, **`r`** still triggers **manual API retry** (same as v0.7.0).
+- **Force recheck (`r`)** — On the torrent list, **`r`** queues qBittorrent **Force recheck** for the **selected** torrent via **`POST /api/v2/torrents/recheck`**. The shortcut bar shows **`r` recheck** when connected. If the **connection/login** overlay is showing, **`r`** still triggers **manual API retry** (same as v0.7.0).
+
+---
+
+## Upgrading
+
 # qBitty v0.8.0
 
 Release notes for **v0.8.0** (from v0.7.0).
@@ -63,7 +112,6 @@ Compare to v0.7.0 on GitHub:
 <https://github.com/thatCraigW/qBitty/compare/v0.7.0...v0.8.0>
 
 ---
-
 # qBitty v0.7.0
 
 Release notes for **v0.7.0** (from v0.6.0).

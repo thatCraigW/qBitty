@@ -18,6 +18,7 @@ import (
 type QBClient struct {
 	Client  *http.Client
 	BaseURL string
+	apiKey  string // optional X-Api-Key header for qBittorrent v5.2+
 }
 
 // NewQBClient loads config (file + env var fallback), creates an HTTP client, and authenticates.
@@ -30,13 +31,13 @@ func NewQBClient() (*QBClient, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := api.Login(cfg.Username, cfg.Password); err != nil {
+	if err := api.Login(cfg.Username, cfg.Password, cfg.APIKey); err != nil {
 		return nil, err
 	}
 	return api, nil
 }
 
-// NewQBClientFromConfig builds a QBClient with cookie jar and timeout; does not call Login (for TUI retry flows).
+// NewQBClientFromConfig builds a QBClient with cookie jar, timeout, and API key; does not call Login (for TUI retry flows).
 func NewQBClientFromConfig(cfg *Config) (*QBClient, error) {
 	parsed, err := url.Parse(cfg.URL)
 	if err != nil {
@@ -58,17 +59,37 @@ func NewQBClientFromConfig(cfg *Config) (*QBClient, error) {
 	return &QBClient{
 		Client:  client,
 		BaseURL: strings.TrimRight(cfg.URL, "/"),
+		apiKey:  cfg.APIKey, // Store API key for use in subsequent requests
 	}, nil
 }
 
-// Login performs POST to /api/v2/auth/login and stores session cookie.
-func (c *QBClient) Login(username, password string) error {
+// Login performs authentication - uses Basic Auth (username/password) with optional X-Api-Key header.
+func (c *QBClient) Login(username, password, apiKey string) error {
 	loginURL := c.BaseURL + "/api/v2/auth/login"
+
+	// qBittorrent v5.2+ requires both Basic Auth and API key for secure authentication
 	data := url.Values{}
 	data.Set("username", username)
 	data.Set("password", password)
 
-	resp, err := c.Client.PostForm(loginURL, data)
+	client := &http.Client{
+		Jar:     c.Client.Jar,
+		Timeout: c.Client.Timeout,
+		Transport: c.Client.Transport,
+	}
+
+	req, err := http.NewRequest("POST", loginURL, strings.NewReader(data.Encode()))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	
+	// Add API key header if provided (required for qBittorrent v5.2+)
+	if apiKey != "" {
+		req.Header.Set("X-Api-Key", apiKey)
+	}
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("login request failed: %w", err)
 	}
@@ -128,9 +149,56 @@ func (c *QBClient) GetTorrentsRaw() ([]byte, error) {
 	return data, nil
 }
 
+// getJSON performs a GET request with optional API key header and decodes the JSON response into target.
+func (c *QBClient) getJSON(endpoint string, target interface{}) error {
+	req, err := http.NewRequest("GET", c.BaseURL+endpoint, nil)
+	if err != nil {
+		return err
+	}
+
+	client := &http.Client{
+		Jar:     c.Client.Jar,
+		Timeout: c.Client.Timeout,
+		Transport: c.Client.Transport,
+	}
+
+	// Add API key header if provided (required for qBittorrent v5.2+)
+	if c.apiKey != "" {
+		req.Header.Set("X-Api-Key", c.apiKey)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
+	}
+	return json.NewDecoder(resp.Body).Decode(target)
+}
+
 // postAction sends a POST with form data to the given API endpoint; returns error on non-200.
 func (c *QBClient) postAction(endpoint string, data url.Values) error {
-	resp, err := c.Client.PostForm(c.BaseURL+endpoint, data)
+	client := &http.Client{
+		Jar:     c.Client.Jar,
+		Timeout: c.Client.Timeout,
+		Transport: c.Client.Transport,
+	}
+
+	req, err := http.NewRequest("POST", c.BaseURL+endpoint, strings.NewReader(data.Encode()))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	// Add API key header if provided (required for qBittorrent v5.2+)
+	if c.apiKey != "" {
+		req.Header.Set("X-Api-Key", c.apiKey)
+	}
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
@@ -182,19 +250,6 @@ func (c *QBClient) DecreasePriority(hash string) error {
 // AddTorrentURL adds a torrent by URL or magnet link.
 func (c *QBClient) AddTorrentURL(torrentURL string) error {
 	return c.postAction("/api/v2/torrents/add", url.Values{"urls": {torrentURL}})
-}
-
-// getJSON performs a GET request and decodes the JSON response into target.
-func (c *QBClient) getJSON(endpoint string, target interface{}) error {
-	resp, err := c.Client.Get(c.BaseURL + endpoint)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		return fmt.Errorf("API returned status %d", resp.StatusCode)
-	}
-	return json.NewDecoder(resp.Body).Decode(target)
 }
 
 // GetTorrentProperties fetches detailed properties for a single torrent by hash.
