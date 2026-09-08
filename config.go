@@ -22,6 +22,27 @@ type Config struct {
 	// RadarrURL and RadarrAPIKey enable blocklist for torrents in category "Radarr".
 	RadarrURL    string `json:"radarr_url,omitempty"`
 	RadarrAPIKey string `json:"radarr_api_key,omitempty"`
+	// AutoBlock configures automatic detection of Sonarr/Radarr torrents that hold
+	// no importable media; nil or mode "off" disables it entirely.
+	AutoBlock *AutoBlockConfig `json:"autoblock,omitempty"`
+}
+
+// AutoBlockConfig is the user-facing auto-block settings; every field is optional
+// and falls back to the defaults in autoblock.go.
+type AutoBlockConfig struct {
+	// Mode is off, log, flag, or auto (increasing autonomy); unrecognized values disable the feature.
+	Mode string `json:"mode,omitempty"`
+	// MinMediaBytes is the size a media file must reach to count as real content.
+	MinMediaBytes int64 `json:"min_media_bytes,omitempty"`
+	// GraceSeconds is how long after a torrent is added before it may be judged.
+	GraceSeconds int `json:"grace_seconds,omitempty"`
+	// MaxPerHour caps blocklist actions per rolling hour in auto mode.
+	MaxPerHour int `json:"max_per_hour,omitempty"`
+	// BannedExtensions and MediaExtensions replace the built-in lists when non-empty.
+	BannedExtensions []string `json:"banned_extensions,omitempty"`
+	MediaExtensions  []string `json:"media_extensions,omitempty"`
+	// LogPath overrides the default audit log location.
+	LogPath string `json:"log_path,omitempty"`
 }
 
 // mergeConfigFromFileAndEnv loads the first existing config file if any, applies env overrides, and does not require qB fields to be set (inputs: none; output: merged config or I/O/JSON error).
@@ -34,7 +55,7 @@ func mergeConfigFromFileAndEnv() (*Config, error) {
 	return cfg, nil
 }
 
-// applyEnvOverrides replaces config fields from QB_* and SONARR_* / RADARR_* when those env vars are non-empty (input/output: cfg pointer).
+// applyEnvOverrides replaces config fields from QB_*, SONARR_* / RADARR_*, and QBITTY_AUTOBLOCK_MODE when those env vars are non-empty (input/output: cfg pointer).
 func applyEnvOverrides(cfg *Config) {
 	if v := os.Getenv("QB_URL"); v != "" {
 		cfg.URL = v
@@ -56,6 +77,12 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("RADARR_API_KEY"); v != "" {
 		cfg.RadarrAPIKey = v
+	}
+	if v := os.Getenv("QBITTY_AUTOBLOCK_MODE"); v != "" {
+		if cfg.AutoBlock == nil {
+			cfg.AutoBlock = &AutoBlockConfig{}
+		}
+		cfg.AutoBlock.Mode = v
 	}
 }
 

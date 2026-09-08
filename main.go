@@ -31,9 +31,9 @@ const (
 )
 
 var (
-	viewLeft      = "torrentList"
-	viewDetails   = "details"
-	viewShortcuts = "shortcuts" // shortcut hints row below torrent panel (stats live on torrent Footer / bottom border)
+	viewLeft         = "torrentList"
+	viewDetails      = "details"
+	viewShortcuts    = "shortcuts" // shortcut hints row below torrent panel (stats live on torrent Footer / bottom border)
 	viewOverlay      = "overlay"
 	torrents         []Torrent
 	filteredTorrents []Torrent
@@ -58,6 +58,12 @@ var (
 	arrQueueMu         sync.RWMutex
 	sonarrQueueRecords []arrQueueRecord // snapshot from last GET /api/v3/queue (Sonarr)
 	radarrQueueRecords []arrQueueRecord // snapshot from last GET /api/v3/queue (Radarr)
+
+	autoBlockMu          sync.RWMutex
+	autoBlockSettingsCur autoBlockSettings // resolved from config; mode "off" means the scan never runs
+	autoBlockScannerInst = newAutoBlockScanner()
+	autoBlockRunning     int32                // guards against overlapping scans when one runs long
+	autoBlockLimiter     autoBlockRateLimiter // rolling-hour cap on automatic blocklists
 )
 
 // roundedFrameRunes matches lazygit's gui.Border "rounded" (─ │ ╭ ╮ ╰ ╯); assign to View.FrameRunes for framed panels.
@@ -142,6 +148,103 @@ func applyArrClientsFromConfig(cfg *Config) {
 	}
 }
 
+// applyAutoBlockFromConfig resolves auto-block settings from cfg; an unrecognized
+// mode disables the feature (inputs: loaded config; output: whether the mode was recognized).
+func applyAutoBlockFromConfig(cfg *Config) bool {
+	st, ok := autoBlockSettingsFromConfig(cfg)
+	autoBlockMu.Lock()
+	autoBlockSettingsCur = st
+	autoBlockMu.Unlock()
+	return ok
+}
+
+// currentAutoBlockSettings returns a snapshot of the resolved auto-block settings (inputs: none; output: settings).
+func currentAutoBlockSettings() autoBlockSettings {
+	autoBlockMu.RLock()
+	defer autoBlockMu.RUnlock()
+	return autoBlockSettingsCur
+}
+
+// disableAutoBlock forces mode off for the rest of the session, used when the audit
+// log cannot be written and detections would otherwise go unrecorded (inputs: none).
+func disableAutoBlock() {
+	autoBlockMu.Lock()
+	autoBlockSettingsCur.Mode = autoBlockModeOff
+	autoBlockMu.Unlock()
+}
+
+// blocklistViaArrForCategory blocklists a torrent through the *arr that owns its
+// category. The queue row is looked up fresh inside blocklistTorrentViaArr, so a
+// stale cached id can never cause the wrong release to be blocklisted
+// (inputs: category, torrent hash and name; output: error).
+func blocklistViaArrForCategory(category, hash, name string) error {
+	switch category {
+	case arrCategorySonarr:
+		return blocklistTorrentViaArr(arrSonarrClient, hash, name)
+	case arrCategoryRadarr:
+		return blocklistTorrentViaArr(arrRadarrClient, hash, name)
+	default:
+		return fmt.Errorf("category %q has no Sonarr/Radarr client configured", category)
+	}
+}
+
+// runAutoBlockTick scans Sonarr/Radarr torrents for payloads with no importable media
+// and appends each new detection to the audit log. In log and flag modes nothing is
+// removed or blocklisted; in auto mode each detection *arr still tracks is blocklisted
+// there, subject to the rolling-hour cap (inputs: gui for the post-action refresh, qB
+// client; output: none — results reach the audit log and the scanner's flagged set).
+func runAutoBlockTick(g *gocui.Gui, client *QBClient) {
+	st := currentAutoBlockSettings()
+	if client == nil || !st.enabled() {
+		return
+	}
+	if !atomic.CompareAndSwapInt32(&autoBlockRunning, 0, 1) {
+		return
+	}
+	defer atomic.StoreInt32(&autoBlockRunning, 0)
+
+	torrentsMu.RLock()
+	list := append([]Torrent(nil), torrents...)
+	torrentsMu.RUnlock()
+
+	arrQueueMu.RLock()
+	sq := sonarrQueueRecords
+	rq := radarrQueueRecords
+	arrQueueMu.RUnlock()
+
+	now := time.Now()
+	found := autoBlockScannerInst.scan(client.GetTorrentFiles, st, list, sq, rq, now)
+	// Detections held back by an earlier tick's cap go first, so the oldest finding
+	// gets the freed slot rather than whatever was noticed most recently.
+	pending := append(autoBlockScannerInst.takeDeferred(), found...)
+
+	blocklisted := false
+	for _, d := range pending {
+		entry, retry := actOnDetection(d, st, blocklistViaArrForCategory, &autoBlockLimiter, now)
+		if retry {
+			autoBlockScannerInst.deferDetection(d)
+		}
+		if entry.Action == autoBlockActionBlocklisted {
+			blocklisted = true
+		}
+		if err := appendAutoBlockLog(st.LogPath, entry); err != nil {
+			// The log is the whole point in log mode; if it breaks mid-session, stop
+			// silently accumulating undetectable decisions.
+			disableAutoBlock()
+			return
+		}
+	}
+
+	// *arr removes the torrent from qBittorrent as part of blocklisting, so the list
+	// on screen is now stale. The scanner keeps its verdict for the hash until the
+	// torrent actually disappears, which is what stops a second blocklist attempt.
+	if blocklisted && g != nil {
+		g.Update(func(gui *gocui.Gui) error {
+			return refreshTorrentsFromAPI(gui, client)
+		})
+	}
+}
+
 // refreshArrQueueCaches refetches Sonarr/Radarr /api/v3/queue when configured; logs errors and leaves prior cache on failure (inputs: none; output: updates sonarrQueueRecords and radarrQueueRecords).
 func refreshArrQueueCaches() {
 	arrQueueMu.Lock()
@@ -171,6 +274,7 @@ func tryRecoverAPISync() {
 		return
 	}
 	applyArrClientsFromConfig(cfg)
+	applyAutoBlockFromConfig(cfg)
 	if err := apiClient.Login(cfg.Username, cfg.Password, cfg.APIKey); err != nil {
 		setAPIError(err)
 		return
@@ -225,6 +329,20 @@ func main() {
 		}
 	}
 	applyArrClientsFromConfig(cfg)
+	if !applyAutoBlockFromConfig(cfg) {
+		log.Printf("qbitty: unrecognized autoblock.mode — auto-block disabled (use off, log, flag, or auto)")
+	}
+	if st := currentAutoBlockSettings(); st.enabled() {
+		// Fail loudly here rather than discovering mid-session that detections went nowhere.
+		if err := appendAutoBlockLog(st.LogPath, autoBlockLogEntry{Mode: st.Mode, Action: autoBlockActionSessionStart}); err != nil {
+			log.Printf("qbitty: auto-block audit log not writable (%v) — auto-block disabled", err)
+			disableAutoBlock()
+		} else if st.acts() && arrSonarrClient == nil && arrRadarrClient == nil {
+			// Auto mode without an *arr can still detect, but has nothing to blocklist
+			// through; say so now rather than leaving a log full of detected_no_arr.
+			log.Printf("qbitty: autoblock.mode is auto but no Sonarr/Radarr API is configured — findings will be recorded, not blocklisted")
+		}
+	}
 
 	apiClient, err = NewQBClientFromConfig(cfg)
 	if err != nil {
@@ -332,6 +450,7 @@ func main() {
 				})
 			case <-arrQueueTicker.C:
 				refreshArrQueueCaches()
+				go runAutoBlockTick(g, apiClient)
 				g.Update(func(gui *gocui.Gui) error {
 					return refreshUI(gui)
 				})
@@ -765,6 +884,10 @@ func refreshTorrentList(g *gocui.Gui, v *gocui.View) {
 	rq := radarrQueueRecords
 	arrQueueMu.RUnlock()
 
+	// Resolve the mode-dependent half of the marker once. In off and log modes no row
+	// is ever marked, so the per-row flagged lookup is skipped entirely.
+	abText, abColor, abMarks := autoBlockStatusOverride(true, currentAutoBlockSettings().Mode)
+
 	if currentSelection >= 0 && currentSelection < len(localTorrents) {
 		rs := []rune(localTorrents[currentSelection].Name)
 		if len(rs) > nameWidth {
@@ -813,6 +936,11 @@ func refreshTorrentList(g *gocui.Gui, v *gocui.View) {
 		etaStr := formatETA(t.ETA)
 
 		displayStatus, displayStatusColor := torrentStatusColumnText(t, sq, rq)
+		if abMarks {
+			if _, flagged := autoBlockScannerInst.flaggedVerdict(t.Hash); flagged {
+				displayStatus, displayStatusColor = abText, abColor
+			}
+		}
 
 		// Determine if status is moving, stopped, or stalled (use qB state for ETA/speed, not *arr label)
 		statusLower := strings.ToLower(cleanStatusString(t.State))
@@ -1441,15 +1569,86 @@ func refreshTorrentsFromAPI(g *gocui.Gui, client *QBClient) error {
 	return refreshUI(g)
 }
 
+// autoBlockDetailLines returns the finding to show in the details pane for a
+// flagged torrent, headed so it reads as a warning rather than another statistic.
+// Empty unless the active mode marks the UI (inputs: torrent hash; output: lines).
+func autoBlockDetailLines(hash string) []string {
+	if !autoBlockMarksUI(currentAutoBlockSettings().Mode) {
+		return nil
+	}
+	v, flagged := autoBlockScannerInst.flaggedVerdict(hash)
+	if !flagged {
+		return nil
+	}
+	lines := autoBlockEvidenceLines(v)
+	if len(lines) == 0 {
+		return nil
+	}
+	return append([]string{"Auto-block: " + lines[0]}, lines[1:]...)
+}
+
+// autoBlockConfirmMessage appends the scanner's finding to a confirm-dialog message,
+// so a blocklist is confirmed against the actual file list rather than a bare
+// warning. Unlike the list and details pane this ignores the mode and reports
+// whatever the scanner knows, log mode included: withholding evidence at the moment
+// an irreversible choice is made would be the wrong trade, and showing it is not the
+// acting that log mode promises not to do. Unflagged torrents get the message
+// unchanged (inputs: message and torrent hash; output: message, possibly with evidence).
+func autoBlockConfirmMessage(msg, hash string) string {
+	v, flagged := autoBlockScannerInst.flaggedVerdict(hash)
+	if !flagged {
+		return msg
+	}
+	lines := autoBlockEvidenceLines(v)
+	if len(lines) == 0 {
+		return msg
+	}
+	return msg + "\n" + strings.Join(lines, "\n")
+}
+
+// logManualAutoBlock records the outcome of a blocklist the user confirmed on a
+// flagged torrent, so the audit log shows what became of a finding and not merely
+// that it was found. Torrents the scanner never flagged are not its business, and
+// a failure to write here must not mask the *arr result (inputs: torrent, action error).
+func logManualAutoBlock(t *Torrent, actErr error) {
+	if t == nil {
+		return
+	}
+	st := currentAutoBlockSettings()
+	if !st.enabled() {
+		return
+	}
+	v, flagged := autoBlockScannerInst.flaggedVerdict(t.Hash)
+	if !flagged {
+		return
+	}
+	e := autoBlockLogEntry{
+		Mode:        st.Mode,
+		Action:      autoBlockActionBlocklisted,
+		Hash:        t.Hash,
+		Name:        t.Name,
+		Category:    t.Category,
+		TotalFiles:  v.TotalFiles,
+		MediaFiles:  v.MediaFiles,
+		BannedFiles: v.BannedFiles,
+	}
+	if actErr != nil {
+		e.Action = autoBlockActionError
+		e.Error = actErr.Error()
+	}
+	_ = appendAutoBlockLog(st.LogPath, e)
+}
+
 // confirmQBRemoveOnly asks to delete the torrent in qBittorrent only; explains that qB has no release blocklist (inputs: g, client, hash, extra context line).
 func confirmQBRemoveOnly(g *gocui.Gui, client *QBClient, hash string, contextLine string) error {
 	msg := "Remove torrent from qBittorrent only? (y/n)\n" +
 		"qBittorrent cannot block future grabs; only Sonarr/Radarr blocklists do that.\n" +
 		contextLine
-	return showConfirmDialog(g, msg, func() error {
+	return showConfirmDialog(g, autoBlockConfirmMessage(msg, hash), func() error {
 		if err := client.DeleteTorrent(hash, false); err != nil {
 			return err
 		}
+		autoBlockScannerInst.forget(hash)
 		return refreshTorrentsFromAPI(g, client)
 	})
 }
@@ -1467,10 +1666,13 @@ func confirmBlocklistTorrent(g *gocui.Gui, client *QBClient) error {
 	case arrCategorySonarr:
 		if arrSonarrClient != nil {
 			msg := "Sonarr: blocklist this release and remove from client? (y/n)"
-			return showConfirmDialog(g, msg, func() error {
-				if err := blocklistTorrentViaArr(arrSonarrClient, hash, name); err != nil {
+			return showConfirmDialog(g, autoBlockConfirmMessage(msg, hash), func() error {
+				err := blocklistTorrentViaArr(arrSonarrClient, hash, name)
+				logManualAutoBlock(t, err)
+				if err != nil {
 					return err
 				}
+				autoBlockScannerInst.forget(hash)
 				return refreshTorrentsFromAPI(g, client)
 			})
 		}
@@ -1479,10 +1681,13 @@ func confirmBlocklistTorrent(g *gocui.Gui, client *QBClient) error {
 	case arrCategoryRadarr:
 		if arrRadarrClient != nil {
 			msg := "Radarr: blocklist this release and remove from client? (y/n)"
-			return showConfirmDialog(g, msg, func() error {
-				if err := blocklistTorrentViaArr(arrRadarrClient, hash, name); err != nil {
+			return showConfirmDialog(g, autoBlockConfirmMessage(msg, hash), func() error {
+				err := blocklistTorrentViaArr(arrRadarrClient, hash, name)
+				logManualAutoBlock(t, err)
+				if err != nil {
 					return err
 				}
+				autoBlockScannerInst.forget(hash)
 				return refreshTorrentsFromAPI(g, client)
 			})
 		}
@@ -1519,7 +1724,7 @@ func showConfirmDialog(g *gocui.Gui, message string, onConfirm func() error) err
 		viewH = maxY - 4
 	}
 	x0 := maxX/2 - width/2
-	y0 := (maxY-viewH)/2
+	y0 := (maxY - viewH) / 2
 	if y0 < 0 {
 		y0 = 0
 	}
@@ -1727,6 +1932,12 @@ func renderGeneralTab(v *gocui.View, client *QBClient, hash string) {
 	fmt.Fprintf(v, " %sHash%s           %s\n", label, val, t.Hash)
 	fmt.Fprintf(v, " %sState%s          %s\n", label, val, cleanStatusString(t.State))
 	fmt.Fprintf(v, " %sProgress%s       %.2f%%\n", label, val, t.Progress*100)
+	if lines := autoBlockDetailLines(t.Hash); len(lines) > 0 {
+		fmt.Fprintln(v)
+		for _, ln := range lines {
+			fmt.Fprintf(v, " %s%s%s\n", redColor, ln, resetColor)
+		}
+	}
 	fmt.Fprintln(v)
 
 	fmt.Fprintf(v, " %sDown Speed%s     %s (avg: %s)\n", label, val, formatSpeed(t.DownloadSpeed), formatSpeed(props.DlSpeedAvg))
@@ -2218,4 +2429,3 @@ func isTorrentInactiveState(state string) bool {
 		return false
 	}
 }
-

@@ -117,6 +117,124 @@ Restrict permissions so only your user can read it:
 chmod 600 ~/.config/qbitty/config.json
 ```
 
+### Automatic detection of media-less grabs (optional)
+
+Sonarr and Radarr sometimes grab a release whose payload contains no video at all — just
+an `.exe`, an archive, or a disc image. qBitty can spot these and record them for you.
+
+Add an `autoblock` block to `config.json`:
+
+```json
+{
+  "autoblock": {
+    "mode": "log"
+  }
+}
+```
+
+**Modes**, in increasing order of autonomy:
+
+| Mode   | Behavior |
+|--------|----------|
+| `off`  | Default. No scanning. |
+| `log`  | Records what it *would* blocklist to an audit log. Nothing is removed or blocklisted. |
+| `flag` | Also marks suspicious torrents in the list and details pane, so you can review the evidence and blocklist with **`b`**. Still nothing automatic. |
+| `auto` | Blocklists via Sonarr/Radarr automatically, capped at `max_per_hour`. Everything `flag` shows still applies. |
+
+**Start with `log`** and read the audit log for a week before promoting the mode. Detection
+is deliberately conservative — a torrent is only suspicious when **all** of these hold:
+
+- its category is `Sonarr` or `Radarr`
+- its file list is known (metadata has arrived) and it is past the grace window
+- it contains **no** media file at or above `min_media_bytes` — this size floor is what
+  defeats the common trick of padding an `.exe` with a tiny decoy `.mkv`
+- it contains **at least one** file with a banned extension (executables, scripts,
+  archives, disc images including `.iso`, and `.ts`)
+
+`.ts` is the one banned extension that is not malware. A transport stream is genuine
+video, but if your player cannot open one, a release delivered as `.ts` is just as
+unusable as an executable — so it is excluded from the media list and banned instead.
+The related `.m2ts` and `.mts` containers are *not* banned; add them to
+`banned_extensions` (and drop them from `media_extensions`) if your player rejects those
+too. An extension in both lists never triggers a ban, since media is counted first.
+
+Requiring two independent signals is what keeps ordinary releases safe: a normal season
+pack full of `.srt`, `.nfo` and `.txt` files trips nothing, because it also contains real
+video. Note that qBittorrent's own **Excluded file names** list is *not* used for this —
+it mixes cosmetic junk (`.txt`, `.jpg`) with genuine malware indicators, so matching it
+would flag almost every legitimate release.
+
+**What `flag` mode shows** — a flagged torrent's **Status** column reads `NO MEDIA` in red,
+replacing the qBittorrent/*arr status. That replacement is the point: Sonarr will happily
+report `Downloading` or `Importing` for a payload it can never import, and that is exactly
+the misleading part. The details pane lists the offending file names underneath.
+
+Pressing **`b`** on a flagged torrent works as it always has, except the confirmation
+dialog now lists the banned files first, so you approve the blocklist against the actual
+file list rather than a bare warning. Confirmed blocklists on flagged torrents are written
+to the audit log as `blocklisted` (or `error`), so the log shows what became of each
+finding and not merely that it was found.
+
+**What `auto` mode does** — every finding that Sonarr/Radarr still has a queue row for is
+blocklisted there automatically (`DELETE /api/v3/queue/{id}` with `removeFromClient=true`
+and `blocklist=true`) — the same call **`b`** makes, so the release is blocklisted *and*
+removed from qBittorrent, and the *arr searches for a replacement. The queue row is looked
+up fresh at the moment of the call, so a stale id can never blocklist the wrong release.
+
+Three things bound it:
+
+- **`max_per_hour`** (default 5) is a rolling-hour cap on blocklist calls. If the rule is
+  ever wrong, it can be wrong about five releases an hour, not your whole queue. Findings
+  past the cap are logged as `skipped_rate_cap` and retried on a later tick once a slot
+  frees — they are held, not dropped.
+- **Findings *arr no longer tracks** are never acted on. They are logged as
+  `detected_no_arr`, because without a queue row there is nothing to blocklist.
+- **A failed blocklist is not retried.** It is logged as `error` with the cause, and the
+  torrent stays flagged so you can decide with **`b`**. The usual causes — the queue row
+  vanished, the release was already handled — do not improve with repetition.
+
+Run `log` for a while first and read the audit log. Promoting straight to `auto` means
+trusting the rule against your indexers before you have seen it judge them.
+
+**Audit log** — one JSON object per line, at `$XDG_STATE_HOME/qbitty/autoblock.log`
+(default `~/.local/state/qbitty/autoblock.log`):
+
+```json
+{"time":"2026-08-30T18:07:44Z","mode":"log","action":"detected","hash":"a1b2…","name":"Some.Release.S01E01","category":"Sonarr","total_files":1,"media_files":0,"banned_files":["payload.exe"],"queue_id":42}
+```
+
+`action` is one of:
+
+| Action | Meaning |
+|--------|---------|
+| `session_start` | qBitty began watching. Gaps between these show when nothing was watched — the scan only runs while qBitty is open. |
+| `detected` | Suspicious, and Sonarr/Radarr still tracks it. In `log`/`flag` modes this is the whole record. |
+| `detected_no_arr` | Suspicious, but the *arr queue entry is gone, so a blocklist is not possible. |
+| `blocklisted` | Blocklisted via Sonarr/Radarr — by `auto` mode, or by you confirming **`b`** on a flagged torrent. |
+| `skipped_rate_cap` | `auto` mode hit `max_per_hour`; held for a later tick. |
+| `error` | The blocklist call failed; `error` carries the cause. |
+
+Every action line carries the full evidence (`total_files`, `media_files`, `banned_files`),
+so the log shows *why* each release was actioned, not merely that it was.
+
+If the audit log cannot be written, auto-block disables itself and says so at startup
+rather than making decisions you cannot review.
+
+**All settings** (every key optional):
+
+| Key                 | Default | Meaning |
+|---------------------|---------|---------|
+| `mode`              | `off`   | `off`, `log`, `flag`, or `auto`. Unrecognized values disable the feature. |
+| `min_media_bytes`   | `52428800` (50 MB) | Size a media file must reach to count as real content. |
+| `grace_seconds`     | `60`    | How long after a torrent is added before it may be judged. |
+| `max_per_hour`      | `5`     | Cap on blocklist actions per rolling hour (used by `auto`). |
+| `media_extensions`  | built-in | **Replaces** the built-in importable-media list. |
+| `banned_extensions` | built-in | **Replaces** the built-in banned list. |
+| `log_path`          | XDG state dir | Override the audit log location. |
+
+Scanning piggybacks on the existing 10-second Sonarr/Radarr poll and fetches a file list
+at most once per torrent, so a torrent judged clean is never re-examined.
+
 ### Environment variables (alternative / override)
 
 You can use environment variables instead of a config file, or to override individual values from the config file:
@@ -134,6 +252,7 @@ You can use environment variables instead of a config file, or to override indiv
 | `RADARR_API_KEY`   | Radarr API key (**Settings → Security**)       |                            |
 | `QBITTY_WIZARD`    | If **`1`** / **`true`** / **`yes`** / **`on`**, run interactive setup when qB credentials are incomplete (same as **`--wizard`**) | |
 | `WIZARD`           | Same as **`QBITTY_WIZARD`** (either variable works) | |
+| `QBITTY_AUTOBLOCK_MODE` | Override `autoblock.mode` for one session | `log`                      |
 | Variable           | Description                                      | Example                    |
 |--------------------|--------------------------------------------------|----------------------------|
 | `QB_URL`           | qBittorrent WebUI URL                            | `https://localhost:8080`   |
@@ -151,7 +270,7 @@ You can use environment variables instead of a config file, or to override indiv
 1. Read the first config file that exists, in this order: `$XDG_CONFIG_HOME/qbitty/config.json` (when `XDG_CONFIG_HOME` is set), then `~/.config/qbitty/config.json`. (If `XDG_CONFIG_HOME` points somewhere other than `~/.config`, your file under `~/.config` is still tried second.)
 2. Override with environment variables (if set): `QB_*`, and optionally `SONARR_*` / `RADARR_*`.
 
-Invalid JSON in the config file is reported at startup (it is not ignored). Required qBittorrent keys are `url`, `username`, `password` OR `api_key` in JSON. Optional keys are `sonarr_url`, `sonarr_api_key`, `radarr_url`, `radarr_api_key`.
+Invalid JSON in the config file is reported at startup (it is not ignored). Required qBittorrent keys are `url`, `username`, `password` OR `api_key` in JSON. Optional keys are `sonarr_url`, `sonarr_api_key`, `radarr_url`, `radarr_api_key`, and `autoblock`.
 
 This is useful if you want to keep your URL and username in the config file but pass the password via an env var for extra safety. (If using API key auth, omit both `username` and `password`.)
 
